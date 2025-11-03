@@ -49,6 +49,9 @@ data:
   val_path: "./data/val.jsonl"
   test_path: "./data/test.jsonl"
   synthetic_data_path: "./data/synthetic.jsonl"
+  # Logic datasets (LogiQA, LogicNLI, LogiBench)
+  use_logic_datasets: true
+  logic_datasets_path: "./data/logic_datasets_train.jsonl"
   max_samples: null  # null = use all
   seed: 42
 
@@ -66,6 +69,14 @@ verifier:
   inference_model_path: "./models/verifier/inference"
   confidence_threshold: 0.85
   batch_size: 32
+  # Staged verification: use lightweight checks first, then symbolic
+  use_staged_verification: true
+  use_z3: true
+  use_datalog: true
+  # Repair configuration
+  enable_repair: true
+  max_repairs: 3
+  auto_approve_repairs: false  # Require human approval for repairs
 
 # Evaluation Configuration
 evaluation:
@@ -74,20 +85,33 @@ evaluation:
 
 # Output Schema
 schema:
+  # Legacy format (premises + conclusion)
   required_fields: ["premises", "conclusion"]
   premises_min: 1
   premises_max: 10
   conclusion_max_length: 500
+  # DAG format (premises + inference_steps + conclusion)
+  use_dag_format: true
+  max_inference_steps: 10
+  require_dependencies: true
 
 # System Prompt Template
 prompts:
   system_prompt: |
-    You must respond only in valid JSON format. Your response must contain exactly two fields:
-    1. "premises": an array of concise factual statements (premises) that support your conclusion
-    2. "conclusion": a single sentence that follows logically from the premises
+    You must respond only in valid JSON format. Use DAG-based reasoning structure:
+    1. "premises": array of factual statements (premises)
+    2. "inference_steps": array of reasoning steps, each with:
+       - "text": natural language description
+       - "depends_on": array of IDs of premises/steps this depends on
+    3. "conclusion": final conclusion that follows from all steps
     
-    Each premise should be a factual statement that can be verified. Link premises to evidence when available.
-    Ensure the conclusion follows logically from all the premises provided.
+    Each inference step must explicitly list its dependencies. Steps are verified in topological order.
+    Example structure:
+    {
+      "premises": [{"id": "p1", "text": "..."}],
+      "inference_steps": [{"id": "inf1", "text": "...", "depends_on": ["p1"]}],
+      "conclusion": "..."
+    }
   
   user_template: |
     Question: {question}

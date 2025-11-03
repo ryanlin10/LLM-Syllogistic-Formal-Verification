@@ -24,9 +24,26 @@ pip install -e .
 
 ## Step 2: Configure
 
-Edit `config.yaml` to set:
+### Model Selection (Easy Way)
 
-- `model.base_model`: Path to DeepSeek V3 model
+The easiest way to switch models is using the `.env` file:
+
+```bash
+# Copy the example .env file
+cp .env.example .env
+
+# Switch to your desired model
+python scripts/switch_model.py deepseek-ai/deepseek-v3
+
+# Or manually edit .env and set:
+# MODEL_NAME=deepseek-ai/deepseek-v3
+```
+
+### Full Configuration
+
+Edit `config.yaml` to customize other settings:
+
+- `model.base_model`: Path to model (or set via MODEL_NAME in .env)
 - `data.*`: Paths for data files (they'll be created)
 - `training.output_dir`: Where to save fine-tuned models
 - `verifier.*`: Verifier model paths (can use rule-based fallback initially)

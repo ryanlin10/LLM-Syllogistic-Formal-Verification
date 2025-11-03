@@ -281,9 +281,9 @@ def evaluate_model(
     
     from ..data.curation import DataCurator
     
-    # Load configs
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
+    # Load configs with environment variable support
+    from ..utils.config_loader import load_config
+    config = load_config(config_path)
     
     verifier_config = VerifierConfig(**config["verifier"])
     eval_config = EvaluationConfig(

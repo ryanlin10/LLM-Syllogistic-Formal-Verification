@@ -119,9 +119,32 @@ python scripts/evaluate.py --model_outputs outputs.jsonl --ground_truth data/tes
 
 ## Configuration
 
+### Model Switching
+
+Easily switch between models using a `.env` file:
+
+```bash
+# Create .env file from template
+cp .env.example .env
+
+# Edit .env file and set MODEL_NAME
+# Or use the switch script:
+python scripts/switch_model.py deepseek-ai/deepseek-v3
+
+# List available models
+python scripts/switch_model.py --list
+
+# Check current model
+python scripts/switch_model.py --current
+```
+
+The `.env` file takes priority over `config.yaml`. This allows you to switch models without modifying the config file.
+
+### Full Configuration
+
 Edit `config.yaml` to customize:
 
-- **Model**: Base model path, LoRA settings
+- **Model**: Base model path (or set via MODEL_NAME in .env), LoRA settings
 - **Training**: Batch sizes, learning rates, epochs
 - **RLHF**: PPO parameters, reward scaling
 - **Verifier**: Confidence thresholds, model paths

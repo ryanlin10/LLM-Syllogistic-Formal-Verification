@@ -206,9 +206,9 @@ def train_rlhf(config_path: str = "./config.yaml"):
 
 
 def load_config(config_path: str = "./config.yaml") -> Dict[str, Any]:
-    """Load configuration from YAML file."""
-    with open(config_path, "r") as f:
-        return yaml.safe_load(f)
+    """Load configuration from YAML file with environment variable support."""
+    from ..utils.config_loader import load_config as load_config_with_env
+    return load_config_with_env(config_path)
 
 
 if __name__ == "__main__":

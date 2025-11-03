@@ -26,9 +26,9 @@ class StructuredLLMPredictor:
     ):
         self.config_path = config_path
         
-        # Load config
-        with open(config_path, "r") as f:
-            self.config = yaml.safe_load(f)
+        # Load config with environment variable support
+        from ..utils.config_loader import load_config
+        self.config = load_config(config_path)
         
         # Load model
         print(f"Loading model from {model_path}...")

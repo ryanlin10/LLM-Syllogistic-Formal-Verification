@@ -33,6 +33,9 @@ python-dotenv>=1.0.0
 pyyaml>=6.0
 click>=8.1.0
 
+# Symbolic verification
+z3-solver>=4.12.0  # Z3 SMT solver for formal verification
+
 # Testing
 pytest>=7.4.0
 pytest-cov>=4.1.0

@@ -50,6 +50,11 @@ outputs/
 *.json
 !config.yaml
 
+# Environment variables
+.env
+.env.local
+.env.*.local
+
 # Temporary files
 *.tmp
 *.bak

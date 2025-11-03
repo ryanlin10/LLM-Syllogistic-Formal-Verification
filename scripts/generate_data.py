@@ -13,10 +13,12 @@ import yaml
 
 
 def main():
-    # Load config
+    # Load config with environment variable support
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from src.utils.config_loader import load_config
+    
     config_path = Path(__file__).parent.parent / "config.yaml"
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
+    config = load_config(str(config_path))
     
     # Example documents (in production, load from files)
     sample_documents = [

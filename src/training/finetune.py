@@ -99,9 +99,9 @@ class StructuredOutputDataset:
 
 
 def load_config(config_path: str = "./config.yaml") -> Dict[str, Any]:
-    """Load configuration from YAML file."""
-    with open(config_path, "r") as f:
-        return yaml.safe_load(f)
+    """Load configuration from YAML file with environment variable support."""
+    from ..utils.config_loader import load_config as load_config_with_env
+    return load_config_with_env(config_path)
 
 
 def setup_model_and_tokenizer(config: Dict[str, Any]):

@@ -15,9 +15,10 @@ import yaml
 def main():
     config_path = Path(__file__).parent.parent / "config.yaml"
     
-    # Load config to get model path
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
+    # Load config with environment variable support
+    from src.utils.config_loader import load_config
+    
+    config = load_config(str(config_path))
     
     # Model path (adjust based on your training)
     model_path = config["training"]["output_dir"] + "/final"

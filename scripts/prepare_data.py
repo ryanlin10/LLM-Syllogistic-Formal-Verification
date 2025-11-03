@@ -12,17 +12,28 @@ import yaml
 
 
 def main():
+    # Load config with environment variable support
+    from src.utils.config_loader import load_config
+    
     config_path = Path(__file__).parent.parent / "config.yaml"
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
+    config = load_config(str(config_path))
     
     curator = DataCurator(seed=config["data"]["seed"])
     
-    # Input data (could be synthetic, annotated, or combined)
+    # Input data (could be synthetic, annotated, logic datasets, or combined)
     input_files = [
         config["data"]["synthetic_data_path"],
-        # Add other data sources here
     ]
+    
+    # Add logic datasets if enabled
+    if config["data"].get("use_logic_datasets", False):
+        logic_path = config["data"].get("logic_datasets_path", "./data/logic_datasets_train.jsonl")
+        if Path(logic_path).exists():
+            input_files.append(logic_path)
+            print(f"Will include logic datasets from: {logic_path}")
+        else:
+            print(f"Warning: Logic datasets path {logic_path} not found.")
+            print(f"  Run: python scripts/load_logic_datasets.py to generate it")
     
     # Combine all data
     all_data = []

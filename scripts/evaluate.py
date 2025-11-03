@@ -37,6 +37,9 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
+    # Load config with environment variable support
+    from src.utils.config_loader import load_config
+    
     # Load model outputs
     model_outputs = []
     with open(args.model_outputs, "r") as f:
