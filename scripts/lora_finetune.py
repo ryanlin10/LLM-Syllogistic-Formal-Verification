@@ -666,14 +666,42 @@ Output format:
 # =============================================================================
 
 class LoggingCallback(TrainerCallback):
-    """Custom callback for additional logging."""
+    """Custom callback for additional logging to console and wandb."""
+
+    def __init__(self, use_wandb: bool = False):
+        self.use_wandb = use_wandb and WANDB_AVAILABLE
 
     def on_log(self, args, state: TrainerState, control: TrainerControl, logs=None, **kwargs):
         if logs:
+            step = state.global_step
+            wandb_logs = {"step": step}
+
             if "loss" in logs:
-                print(f"Step {state.global_step}: loss={logs['loss']:.4f}")
+                print(f"Step {step}: train_loss={logs['loss']:.4f}")
+                wandb_logs["train/loss"] = logs["loss"]
+
             if "eval_loss" in logs:
-                print(f"Step {state.global_step}: eval_loss={logs['eval_loss']:.4f}")
+                print(f"Step {step}: eval_loss={logs['eval_loss']:.4f}")
+                wandb_logs["eval/loss"] = logs["eval_loss"]
+
+            if "learning_rate" in logs:
+                wandb_logs["train/learning_rate"] = logs["learning_rate"]
+
+            if "epoch" in logs:
+                wandb_logs["train/epoch"] = logs["epoch"]
+
+            # Log to wandb if enabled
+            if self.use_wandb and len(wandb_logs) > 1:
+                wandb.log(wandb_logs, step=step)
+
+    def on_evaluate(self, args, state: TrainerState, control: TrainerControl, metrics=None, **kwargs):
+        """Log evaluation metrics to wandb."""
+        if metrics and self.use_wandb:
+            step = state.global_step
+            eval_metrics = {f"eval/{k.replace('eval_', '')}": v for k, v in metrics.items()}
+            eval_metrics["step"] = step
+            wandb.log(eval_metrics, step=step)
+            print(f"Step {step}: Evaluation metrics logged to wandb")
 
 
 def setup_model(
@@ -857,7 +885,7 @@ def train(
     )
 
     # Callbacks
-    callbacks = [LoggingCallback()]
+    callbacks = [LoggingCallback(use_wandb=train_config.use_wandb)]
     if train_config.early_stopping_patience > 0 and "validation" in tokenized_datasets:
         callbacks.append(
             EarlyStoppingCallback(
