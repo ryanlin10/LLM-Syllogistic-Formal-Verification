@@ -191,3 +191,4 @@ class DocumentRetriever:
         
         print(f"Loaded {len(self.chunks)} chunks and metadata for {len(self.doc_metadata)} documents")
 
+

@@ -8,7 +8,8 @@ sentencepiece>=0.1.99
 protobuf>=3.20.0
 
 # DeepSeek and model serving
-deepseek-ai>=1.0.0  # Adjust based on actual package name
+# Note: deepseek-ai models are loaded via transformers from HuggingFace
+# No separate package needed - models are at: deepseek-ai/deepseek-v3
 
 # Retrieval and embeddings
 faiss-cpu>=1.7.4  # or faiss-gpu for GPU support
@@ -35,6 +36,9 @@ click>=8.1.0
 
 # Symbolic verification
 z3-solver>=4.12.0  # Z3 SMT solver for formal verification
+
+# API clients
+anthropic>=0.21.0  # Anthropic Claude API for atomic proposition generation
 
 # Testing
 pytest>=7.4.0

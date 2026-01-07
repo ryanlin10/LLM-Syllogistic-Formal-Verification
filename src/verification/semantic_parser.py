@@ -250,3 +250,5 @@ class DatalogChecker:
         
         return False, "Not entailed"
 
+
+
