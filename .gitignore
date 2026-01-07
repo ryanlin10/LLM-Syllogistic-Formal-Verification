@@ -20,7 +20,7 @@ build/
 
 # Models and Data
 models/
-data/
+/data/
 *.bin
 *.safetensors
 *.pt
