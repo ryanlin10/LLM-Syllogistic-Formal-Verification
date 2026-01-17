@@ -11,7 +11,7 @@ from src.data.generator import SyntheticDataGenerator, GenerationConfig
 from src.data.curation import DataCurator
 import yaml
 
-
+# test
 def main():
     # Load config with environment variable support
     sys.path.insert(0, str(Path(__file__).parent.parent))
