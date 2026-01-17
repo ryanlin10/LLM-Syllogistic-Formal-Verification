@@ -29,6 +29,15 @@ from tqdm import tqdm
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Mistral chat template support
+from mistral_common.protocol.instruct.messages import (
+    UserMessage,
+    AssistantMessage,
+    SystemMessage,
+)
+from mistral_common.protocol.instruct.request import ChatCompletionRequest
+from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
+
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
@@ -199,8 +208,10 @@ class DataConfig:
     preprocessing_num_workers: int = 4
     # Inference-focused training: only compute loss on conclusions
     conclusion_only_loss: bool = True
-    conclusion_marker: str = "<CONCLUSION>"
-    end_conclusion_marker: str = "</CONCLUSION>"
+    # Mistral model name for chat template
+    mistral_model: str = "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+    # System prompt for logical reasoning
+    system_prompt: str = "You are a logical reasoning assistant. Given the following premises, derive their valid conclusion."
 
 
 @dataclass
@@ -252,11 +263,14 @@ class TrainConfig:
 # =============================================================================
 
 class DataLoader:
-    """Flexible data loader supporting multiple formats."""
+    """Data loader with Mistral chat template support for logical reasoning training."""
 
     def __init__(self, config: DataConfig, tokenizer):
         self.config = config
         self.tokenizer = tokenizer
+        # Initialize Mistral tokenizer for chat template formatting
+        print(f"Initializing Mistral tokenizer from {config.mistral_model}...")
+        self.mistral_tokenizer = MistralTokenizer.from_hf_hub(config.mistral_model)
 
     def load_jsonl(self, path: str) -> List[Dict[str, Any]]:
         """Load data from JSONL file."""
@@ -272,151 +286,93 @@ class DataLoader:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    def format_example(self, example: Dict[str, Any]) -> Tuple[str, str]:
+    def _extract_premises_conclusion(self, example: Dict[str, Any]) -> Tuple[List[str], str]:
         """
-        Format a single example for training.
+        Extract premises and conclusion from the Annotation format.
+
+        Expected format from generate_logic_data.py:
+        {
+            "id": "uuid",
+            "premises": [{"id": "p1", "text": "..."}, {"id": "p2", "text": "..."}],
+            "conclusion": "conclusion text",
+            ...
+        }
 
         Returns:
-            Tuple of (full_text, conclusion_text) where conclusion_text is
-            the portion we want to compute loss on (for learning inference).
+            Tuple of (list of premise texts, conclusion text)
         """
-        conclusion_marker = self.config.conclusion_marker
-        end_marker = self.config.end_conclusion_marker
+        premises = []
+        conclusion = ""
 
-        # Handle different data formats
-        # NOTE: Order matters! Check more specific formats first.
-
-        # Format 1: Pre-formatted text with markers already present
-        if "text" in example:
-            text = example["text"]
-            if conclusion_marker in text:
-                # Extract conclusion for loss computation
-                start_idx = text.find(conclusion_marker) + len(conclusion_marker)
-                end_idx = text.find(end_marker) if end_marker in text else len(text)
-                conclusion = text[start_idx:end_idx].strip()
-                return text, conclusion
-            # No markers - treat entire text as target
-            return text, text
-
-        # Format 2: DAG format with reasoning (check before premises/context)
-        if "reasoning" in example:
-            context = example.get("context", "")
-            reasoning = example.get("reasoning", {})
-
-            premises = [p.get("text", "") if isinstance(p, dict) else p
-                       for p in reasoning.get("premises", [])]
-            conclusion = reasoning.get("conclusion", "")
-            inference_steps = reasoning.get("inference_steps", [])
-
-            # For DAG format, we train on the full inference chain
-            # The conclusion includes both inference steps and final conclusion
-            full_conclusion = self._format_inference_chain(inference_steps, conclusion)
-            full_text = self._format_inference_prompt(context, premises, full_conclusion)
-            return full_text, full_conclusion
-
-        # Format 3: Question-answer format (check before premises/context)
-        if "question" in example and "answer" in example:
-            question = example["question"]
-            answer = example["answer"]
-            context = example.get("context", "")
-
-            # Treat context + question as premises, answer as conclusion
-            premises = [context] if context else []
-            premises.append(f"Question: {question}")
-            full_text = self._format_inference_prompt("", premises, str(answer))
-            return full_text, str(answer)
-
-        # Format 4: Context + premises + conclusion (SyLLM format)
-        # Concatenate premises as context, only train on conclusion
-        if "context" in example or "premises" in example:
-            context = example.get("context", "")
-            premises = example.get("premises", [])
-            conclusion = example.get("conclusion", {})
-
-            if isinstance(conclusion, dict):
-                conclusion_text = conclusion.get("text", "")
-            else:
-                conclusion_text = str(conclusion)
-
-            # Concatenate all premises as context
-            premise_texts = []
-            for p in premises:
-                if isinstance(p, dict):
-                    premise_texts.append(p.get("text", str(p)))
+        # Extract premises - list of {"id": "p1", "text": "premise text"}
+        if "premises" in example:
+            for p in example["premises"]:
+                if isinstance(p, dict) and "text" in p:
+                    premises.append(p["text"])
+                elif isinstance(p, dict):
+                    # Fallback: use string representation
+                    premises.append(str(p))
                 else:
-                    premise_texts.append(str(p))
+                    premises.append(str(p))
 
-            # Build the full text with premises as context
-            full_text = self._format_inference_prompt(context, premise_texts, conclusion_text)
-            return full_text, conclusion_text
+        # Extract conclusion - either string or dict with "text" field
+        conc = example.get("conclusion", "")
+        if isinstance(conc, dict) and "text" in conc:
+            conclusion = conc["text"]
+        else:
+            conclusion = str(conc) if conc else ""
 
-        # Fallback: convert entire example to JSON, train on everything
-        text = json.dumps(example, ensure_ascii=False)
-        return text, text
+        return premises, conclusion
 
-    def _format_inference_chain(self, inference_steps: List[Dict], conclusion: str) -> str:
-        """Format inference steps and conclusion as a reasoning chain."""
+    def _format_user_message(self, premises: List[str]) -> str:
+        """Format premises as user message with <PREMISE> tags."""
         parts = []
-        for step in inference_steps:
-            step_text = step.get("text", "")
-            step_id = step.get("id", "")
-            depends = step.get("depends_on", [])
-            if depends:
-                parts.append(f"[{step_id}] From {depends}: {step_text}")
-            else:
-                parts.append(f"[{step_id}] {step_text}")
-        parts.append(f"Therefore: {conclusion}")
-        return "\n".join(parts)
+        for premise in premises:
+            if premise and premise.strip():
+                parts.append(f"<PREMISE> {premise.strip()} </PREMISE>")
+        return " ".join(parts)
 
-    def _format_inference_prompt(self, context: str, premises: List[str], conclusion: str) -> str:
+    def _format_assistant_message(self, conclusion: str) -> str:
+        """Format conclusion as assistant message with <CONCLUSION> tags."""
+        return f"<CONCLUSION> {conclusion.strip()} </CONCLUSION>"
+
+    def format_example(self, example: Dict[str, Any]) -> Tuple[str, str]:
         """
-        Format a complete inference training example.
+        Format a single example for training using Mistral chat template.
 
-        Structure:
-        - System instruction
-        - Context (if any)
-        - Premises concatenated as numbered facts
-        - Conclusion marker + conclusion (this is where loss is computed)
+        User message: <PREMISE> premise1 </PREMISE> <PREMISE> premise2 </PREMISE> ...
+        Assistant message: <CONCLUSION> conclusion </CONCLUSION>
+
+        Returns:
+            Tuple of (full_text, assistant_response) where assistant_response is
+            the portion we want to compute loss on (the conclusion).
         """
-        conclusion_marker = self.config.conclusion_marker
-        end_marker = self.config.end_conclusion_marker
+        # Extract premises and conclusion from Annotation format
+        premises, conclusion = self._extract_premises_conclusion(example)
 
-        parts = []
+        if not premises or not conclusion:
+            # Skip malformed data
+            return "", ""
 
-        # System instruction for inference
-        parts.append("You are a logical reasoning assistant. Given the premises below, derive a valid conclusion.")
-        parts.append("")
+        # Format user and assistant messages
+        user_content = self._format_user_message(premises)
+        assistant_content = self._format_assistant_message(conclusion)
 
-        # Add context if present
-        if context and context.strip():
-            parts.append(f"Context: {context}")
-            parts.append("")
+        # Build Mistral chat messages
+        messages = [
+            SystemMessage(content=self.config.system_prompt),
+            UserMessage(content=user_content),
+            AssistantMessage(content=assistant_content),
+        ]
 
-        # Add premises as numbered facts
-        if premises:
-            parts.append("Premises:")
-            for i, premise in enumerate(premises, 1):
-                if premise and premise.strip():
-                    parts.append(f"  {i}. {premise.strip()}")
-            parts.append("")
+        # Encode using Mistral tokenizer to get properly formatted text
+        request = ChatCompletionRequest(messages=messages)
+        encoded = self.mistral_tokenizer.encode_chat_completion(request)
 
-        # Add conclusion with markers for loss computation
-        parts.append("Conclusion:")
-        parts.append(f"{conclusion_marker}{conclusion}{end_marker}")
+        # The full formatted text with proper Mistral chat template
+        full_text = encoded.text
 
-        return "\n".join(parts)
-
-    def _format_prompt(self, context: str) -> str:
-        """Legacy format prompt for backwards compatibility."""
-        system_prompt = """You must respond only in valid JSON format. Extract premises and derive a logical conclusion.
-Output format:
-{
-  "premises": ["premise1", "premise2", ...],
-  "conclusion": "conclusion text"
-}
-
-"""
-        return f"{system_prompt}Context: {context}\n\nOutput: "
+        return full_text, assistant_content
 
     def load_data(self) -> Tuple[List[Dict], List[Dict], List[Dict]]:
         """Load train, validation, and test data."""
@@ -539,42 +495,61 @@ Output format:
 
         def process_examples(examples: List[Dict]) -> Dict[str, List]:
             texts = []
-            conclusions = []
+            assistant_responses = []
+            skipped = 0
 
             for ex in examples:
-                full_text, conclusion = self.format_example(ex)
-                texts.append(full_text)
-                conclusions.append(conclusion)
+                full_text, assistant_response = self.format_example(ex)
+                # Filter out malformed examples
+                if full_text and assistant_response:
+                    texts.append(full_text)
+                    assistant_responses.append(assistant_response)
+                else:
+                    skipped += 1
 
-            return {"text": texts, "conclusion": conclusions}
+            if skipped > 0:
+                print(f"  Skipped {skipped} malformed examples")
+
+            return {"text": texts, "assistant_response": assistant_responses}
 
         datasets = {}
 
         if train_data:
+            print(f"Processing {len(train_data)} training examples...")
             train_processed = process_examples(train_data)
             datasets["train"] = Dataset.from_dict(train_processed)
+            print(f"  Valid training examples: {len(datasets['train'])}")
 
         if val_data:
+            print(f"Processing {len(val_data)} validation examples...")
             val_processed = process_examples(val_data)
             datasets["validation"] = Dataset.from_dict(val_processed)
+            print(f"  Valid validation examples: {len(datasets['validation'])}")
 
         if test_data:
+            print(f"Processing {len(test_data)} test examples...")
             test_processed = process_examples(test_data)
             datasets["test"] = Dataset.from_dict(test_processed)
+            print(f"  Valid test examples: {len(datasets['test'])}")
 
         return DatasetDict(datasets)
 
     def tokenize_dataset(self, dataset: Dataset) -> Dataset:
         """
-        Tokenize a dataset with conclusion-only loss masking.
+        Tokenize a dataset with conclusion-only loss masking for Mistral chat format.
 
-        When conclusion_only_loss is True, we mask all tokens except
-        those in the conclusion portion, so the model only learns to
-        generate accurate inferences.
+        The Mistral chat format is:
+            <s>[INST] {system}
+
+            {user_message}[/INST] {assistant_response}</s>
+
+        When conclusion_only_loss is True, we mask all tokens EXCEPT the assistant
+        response (everything after [/INST]), so the model only learns to generate
+        the conclusion given the premises.
         """
-        conclusion_marker = self.config.conclusion_marker
-        end_marker = self.config.end_conclusion_marker
         use_conclusion_only = self.config.conclusion_only_loss
+        # The marker that indicates end of prompt and start of assistant response
+        assistant_start_marker = "[/INST]"
 
         def tokenize_function(examples):
             # Tokenize full text
@@ -590,63 +565,40 @@ Output format:
             for i, text in enumerate(examples["text"]):
                 input_ids = tokenized["input_ids"][i]
 
-                if use_conclusion_only and conclusion_marker in text:
-                    # Find the conclusion marker position in tokens
-                    # We need to find where the conclusion starts in token space
-                    marker_start = text.find(conclusion_marker)
-                    marker_end = text.find(end_marker) if end_marker in text else len(text)
+                if use_conclusion_only and assistant_start_marker in text:
+                    # Find where [/INST] ends - everything after is the assistant response
+                    marker_end = text.find(assistant_start_marker) + len(assistant_start_marker)
 
-                    # Get the text up to conclusion marker
-                    prefix_text = text[:marker_start + len(conclusion_marker)]
+                    # Tokenize the prefix (everything up to and including [/INST])
+                    prefix_text = text[:marker_end]
                     prefix_tokens = self.tokenizer.encode(prefix_text, add_special_tokens=False)
                     prefix_len = min(len(prefix_tokens), len(input_ids))
 
-                    # Get the text including end marker (to mask it too)
-                    if end_marker in text:
-                        suffix_text = text[marker_end:]
-                        suffix_tokens = self.tokenizer.encode(suffix_text, add_special_tokens=False)
-                        suffix_len = len(suffix_tokens)
-                    else:
-                        suffix_len = 0
-
-                    # Create labels: -100 for non-conclusion tokens
+                    # Create labels: -100 for prompt tokens, actual ids for assistant response
                     label = list(input_ids)
 
-                    # Mask prefix (everything before conclusion content)
+                    # Mask the entire prompt (everything before assistant response)
                     for j in range(prefix_len):
                         label[j] = -100
 
-                    # Mask padding and suffix (end marker and any trailing content)
-                    if suffix_len > 0:
-                        # Find where padding starts
-                        pad_token_id = self.tokenizer.pad_token_id
-                        actual_len = len(input_ids)
-                        for j in range(len(input_ids) - 1, -1, -1):
-                            if input_ids[j] != pad_token_id:
-                                actual_len = j + 1
-                                break
-
-                        # Mask the end marker tokens (last suffix_len tokens before padding)
-                        end_start = max(prefix_len, actual_len - suffix_len)
-                        for j in range(end_start, len(label)):
-                            label[j] = -100
-
                     # Mask padding tokens
                     pad_token_id = self.tokenizer.pad_token_id
-                    for j in range(len(label)):
-                        if input_ids[j] == pad_token_id:
-                            label[j] = -100
+                    if pad_token_id is not None:
+                        for j in range(len(label)):
+                            if input_ids[j] == pad_token_id:
+                                label[j] = -100
 
                     labels.append(label)
                 else:
-                    # No conclusion marker or conclusion_only disabled
+                    # No marker found or conclusion_only disabled
                     # Use standard causal LM training (predict all tokens)
                     label = list(input_ids)
                     # Still mask padding
                     pad_token_id = self.tokenizer.pad_token_id
-                    for j in range(len(label)):
-                        if input_ids[j] == pad_token_id:
-                            label[j] = -100
+                    if pad_token_id is not None:
+                        for j in range(len(label)):
+                            if input_ids[j] == pad_token_id:
+                                label[j] = -100
                     labels.append(label)
 
             tokenized["labels"] = labels
@@ -657,7 +609,7 @@ Output format:
             batched=True,
             num_proc=self.config.preprocessing_num_workers,
             remove_columns=dataset.column_names,
-            desc="Tokenizing (conclusion-only loss)" if use_conclusion_only else "Tokenizing",
+            desc="Tokenizing (assistant-only loss)" if use_conclusion_only else "Tokenizing",
         )
 
 
@@ -812,8 +764,9 @@ def train(
     # Load and prepare data
     print("\n=== Loading Data ===")
     if data_config.conclusion_only_loss:
-        print("Training mode: CONCLUSION-ONLY (loss computed only on inference conclusions)")
-        print(f"  Conclusion markers: {data_config.conclusion_marker} ... {data_config.end_conclusion_marker}")
+        print("Training mode: ASSISTANT-ONLY (loss computed only on assistant response)")
+        print(f"  Using Mistral chat template from: {data_config.mistral_model}")
+        print(f"  Format: <PREMISE>...</PREMISE> -> <CONCLUSION>...</CONCLUSION>")
     else:
         print("Training mode: FULL TEXT (loss computed on all tokens)")
     data_loader = DataLoader(data_config, tokenizer)
@@ -982,27 +935,32 @@ Examples:
   # List available models
   python lora_finetune.py --list-models
 
-  # Fine-tune for inference learning (default: loss only on conclusions)
-  python lora_finetune.py --model llama3-8b --train-path ./data/train.jsonl
+  # Fine-tune Mistral for logical inference (default: loss only on assistant response)
+  python lora_finetune.py --model mistralai/Mistral-Small-3.2-24B-Instruct-2506 --train-path ./data/logic_train.jsonl
 
   # Fine-tune with custom LoRA settings
   python lora_finetune.py --model mistral-7b -r 32 -a 64 --lora-dropout 0.05
 
   # Train on all tokens (not just conclusions)
-  python lora_finetune.py --model llama3-8b --train-path ./data/train.jsonl --train-on-all
+  python lora_finetune.py --train-path ./data/train.jsonl --train-on-all
 
   # Use 4-bit quantization for memory efficiency
-  python lora_finetune.py --model llama2-13b --use-4bit --batch-size 2
-
-  # Custom LoRA target modules
-  python lora_finetune.py --model mistral-7b --target-modules q_proj v_proj k_proj o_proj
+  python lora_finetune.py --use-4bit --batch-size 2
 
   # Use config file
   python lora_finetune.py --config ./configs/finetune_config.yaml
 
 Training Mode:
-  By default, the script trains only on conclusion text to learn accurate inference.
-  The premises are concatenated as context, and loss is computed only on conclusions.
+  Uses Mistral chat template for proper instruction format.
+
+  Input format (from generate_logic_data.py):
+    {"premises": [{"id": "p1", "text": "..."}, ...], "conclusion": "..."}
+
+  Converted to Mistral chat format:
+    User: <PREMISE> premise1 </PREMISE> <PREMISE> premise2 </PREMISE> ...
+    Assistant: <CONCLUSION> conclusion </CONCLUSION>
+
+  By default, loss is computed only on the assistant response (conclusion).
   Use --train-on-all to train on the full text instead.
         """
     )
@@ -1035,13 +993,15 @@ Training Mode:
 
     # Inference training configuration
     parser.add_argument("--conclusion-only-loss", action="store_true", default=True,
-                       help="Only compute loss on conclusion text (default: True)")
+                       help="Only compute loss on assistant response (default: True)")
     parser.add_argument("--train-on-all", action="store_true",
-                       help="Train on all tokens, not just conclusions (disables conclusion-only-loss)")
-    parser.add_argument("--conclusion-marker", type=str, default="<CONCLUSION>",
-                       help="Marker for start of conclusion (default: <CONCLUSION>)")
-    parser.add_argument("--end-conclusion-marker", type=str, default="</CONCLUSION>",
-                       help="Marker for end of conclusion (default: </CONCLUSION>)")
+                       help="Train on all tokens, not just assistant response (disables conclusion-only-loss)")
+    parser.add_argument("--mistral-model", type=str,
+                       default="mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+                       help="Mistral model for chat template formatting")
+    parser.add_argument("--system-prompt", type=str,
+                       default="You are a logical reasoning assistant. Given the following premises, derive their valid conclusion.",
+                       help="System prompt for logical reasoning training")
 
     # Training configuration
     parser.add_argument("--output-dir", type=str, default="./models/lora_finetuned",
@@ -1104,8 +1064,9 @@ def main():
         seed=args.seed,
         # Inference-focused training settings
         conclusion_only_loss=not args.train_on_all,
-        conclusion_marker=args.conclusion_marker,
-        end_conclusion_marker=args.end_conclusion_marker,
+        # Mistral chat template settings
+        mistral_model=args.mistral_model,
+        system_prompt=args.system_prompt,
     )
 
     lora_config = LoRAConfig(
