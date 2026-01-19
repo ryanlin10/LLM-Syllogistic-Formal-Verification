@@ -9,8 +9,18 @@ from .schema import (
     format_prompt,
     ANNOTATION_SCHEMA
 )
-from .generator import SyntheticDataGenerator, GenerationConfig, DataAugmenter
-from .curation import DataCurator
+
+# Optional imports for modules that depend on transformers
+try:
+    from .generator import SyntheticDataGenerator, GenerationConfig, DataAugmenter
+    from .curation import DataCurator
+    _HAS_TRANSFORMERS = True
+except ImportError:
+    SyntheticDataGenerator = None
+    GenerationConfig = None
+    DataAugmenter = None
+    DataCurator = None
+    _HAS_TRANSFORMERS = False
 from .logic_templates import (
     LogicTemplate,
     LogicType,

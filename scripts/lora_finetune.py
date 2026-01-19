@@ -141,11 +141,20 @@ MODEL_REGISTRY = {
         "target_modules": ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         "max_length": 8192,
     },
+<<<<<<< HEAD
     "mistral-small-24b-instruct": {
         "name": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
         "description": "Mistral Small 3.2 24B Instruct (supports 128k context)",
         "target_modules": ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         "max_length": 8192,  # Training default; model supports up to 128k
+=======
+    "mistral-small-24b": {
+        "name": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+        "description": "Mistral Small 3.2 24B Instruct",
+        "target_modules": ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        "max_length": 32768,
+        "model_class": "Mistral3ForConditionalGeneration",
+>>>>>>> 625985ea5b0abb84680dd26218cd339322087894
     },
     # Qwen models
     "qwen2-7b": {
@@ -252,7 +261,7 @@ class TrainConfig:
     greater_is_better: bool = False
     early_stopping_patience: int = 3
     resume_from_checkpoint: Optional[str] = None
-    use_wandb: bool = False
+    use_wandb: bool = True
     wandb_project: str = "syllm-lora-finetune"
     wandb_run_name: Optional[str] = None
     seed: int = 42
@@ -370,8 +379,14 @@ class DataLoader:
             UserMessage(content=user_content),
         ]
 
+<<<<<<< HEAD
         # Encode using Mistral tokenizer to get the prompt
         request = ChatCompletionRequest(messages=messages)
+=======
+        # Encode using Mistral tokenizer to get properly formatted text
+        # continue_final_message=True allows assistant message as final message (for training)
+        request = ChatCompletionRequest(messages=messages, continue_final_message=True)
+>>>>>>> 625985ea5b0abb84680dd26218cd339322087894
         encoded = self.mistral_tokenizer.encode_chat_completion(request)
 
         # Build full training text: prompt + assistant response + EOS
@@ -672,14 +687,26 @@ def setup_model(
         )
         print("Using 8-bit quantization")
 
-    # Load model
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch_dtype,
-        device_map="auto",
-        trust_remote_code=True,
-        quantization_config=quantization_config,
-    )
+    # Load model - use special class if specified in registry
+    model_class_name = model_info.get("model_class")
+    if model_class_name == "Mistral3ForConditionalGeneration":
+        from transformers.models.mistral3.modeling_mistral3 import Mistral3ForConditionalGeneration
+        print(f"Using special model class: {model_class_name}")
+        model = Mistral3ForConditionalGeneration.from_pretrained(
+            model_name,
+            torch_dtype=torch_dtype,
+            device_map="auto",
+            trust_remote_code=True,
+            quantization_config=quantization_config,
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch_dtype,
+            device_map="auto",
+            trust_remote_code=True,
+            quantization_config=quantization_config,
+        )
 
     # Prepare for k-bit training if using quantization
     if quantization_config is not None:
@@ -792,7 +819,7 @@ def train(
         logging_steps=train_config.logging_steps,
         save_steps=train_config.save_steps,
         eval_steps=train_config.eval_steps,
-        evaluation_strategy="steps" if "validation" in tokenized_datasets else "no",
+        eval_strategy="steps" if "validation" in tokenized_datasets else "no",
         save_total_limit=train_config.save_total_limit,
         load_best_model_at_end=train_config.load_best_model_at_end and "validation" in tokenized_datasets,
         metric_for_best_model=train_config.metric_for_best_model,

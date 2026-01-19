@@ -6,7 +6,10 @@ accelerate>=0.24.0
 datasets>=2.14.0
 sentencepiece>=0.1.99
 protobuf>=3.20.0
+<<<<<<< HEAD
 vllm>=0.6.0
+=======
+>>>>>>> 625985ea5b0abb84680dd26218cd339322087894
 mistral_common>=1.8.8
 
 # DeepSeek and model serving

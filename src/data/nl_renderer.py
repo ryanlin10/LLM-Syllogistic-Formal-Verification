@@ -3,9 +3,19 @@ Natural language renderer for logic formula trees.
 
 Converts syntax trees into natural language sentences using atomic propositions
 from a proposition pool.
+
+Only uses approved logical terms:
+- 'if ... then ...' for implication
+- 'and' for conjunction
+- 'or' for disjunction
+- 'it is not the case that' for negation
+- 'for all' for universal quantification
+- 'there exist' for existential quantification
+
+Uses curly brackets {} to disambiguate compound formulas.
 """
 
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set
 from dataclasses import dataclass, field
 import random
 
@@ -20,40 +30,36 @@ from .atomic_proposition_generator import PropositionPool, AtomicProposition
 class RenderConfig:
     """Configuration for natural language rendering."""
     # Connective templates (with {left} and {right} placeholders)
+    # Only use approved terms: 'if ... then ...', 'and', 'or', 'it is not the case that', 'for all', 'there exist'
+    # Note: Brackets are added programmatically in the render functions
     and_templates: List[str] = field(default_factory=lambda: [
-        "both {left} and {right}",
-        "{left}, and {right}",
+        "{left} and {right}",
     ])
     or_templates: List[str] = field(default_factory=lambda: [
-        "either {left} or {right}",
-        "{left}, or {right}",
+        "{left} or {right}",
     ])
     implies_templates: List[str] = field(default_factory=lambda: [
         "if {left}, then {right}",
-        "{right} whenever {left}",
     ])
     iff_templates: List[str] = field(default_factory=lambda: [
         "{left} if and only if {right}",
     ])
     not_templates: List[str] = field(default_factory=lambda: [
         "it is not the case that {child}",
-        "{child} is false",
     ])
 
     # FOL-specific negation templates for predicates
     not_predicate_templates: List[str] = field(default_factory=lambda: [
-        "{entity} is not {predicate}",
-        "{entity} does not have the property of being {predicate}",
+        "it is not the case that {entity} is {predicate}",
     ])
 
-    # Quantifier templates (with {var}, {domain}, {body} placeholders)
+    # Quantifier templates (with {var} and {body} placeholders)
+    # Use explicit variable names for clarity with nested quantifiers
     forall_templates: List[str] = field(default_factory=lambda: [
-        "for all things, {body}",
-        "all things are such that {body}",
+        "for all {var}, {body}",
     ])
     exists_templates: List[str] = field(default_factory=lambda: [
-        "there exists something that {body}",
-        "something {body}",
+        "there exist {var} such that {body}",
     ])
 
     # FOL predicate templates
@@ -61,25 +67,13 @@ class RenderConfig:
         "{entity} is {predicate}",
     ])
 
-    # FOL quantified predicate templates (for simple ∀x.P(x))
-    forall_predicate_templates: List[str] = field(default_factory=lambda: [
-        "all things are {predicate}",
-        "everything is {predicate}",
-    ])
-    exists_predicate_templates: List[str] = field(default_factory=lambda: [
-        "something is {predicate}",
-        "there exists something that is {predicate}",
-    ])
-
-    # FOL quantified implication templates (for ∀x.(P(x)→Q(x)))
-    forall_implies_templates: List[str] = field(default_factory=lambda: [
-        "all {antecedent} things are {consequent}",
-        "if something is {antecedent}, then it is {consequent}",
-        "everything that is {antecedent} is also {consequent}",
+    # FOL predicate templates with explicit variable reference
+    predicate_with_var_templates: List[str] = field(default_factory=lambda: [
+        "{var} is {predicate}",
     ])
 
     # Whether to vary templates or use consistent ones
-    vary_templates: bool = True
+    vary_templates: bool = False  # Set to False for consistency
 
     # Capitalize first letter of output
     capitalize_output: bool = True
@@ -101,6 +95,11 @@ class NaturalLanguageRenderer:
         self._entity_mapping: Dict[str, str] = {}
         self._predicate_mapping: Dict[str, str] = {}
 
+        # Track bound variables in current scope
+        self._bound_variables: Set[str] = set()
+        # Map variable names to descriptive names for natural language
+        self._variable_names: Dict[str, str] = {}
+
         # Track if we're rendering FOL
         self._is_fol_mode = False
 
@@ -118,6 +117,8 @@ class NaturalLanguageRenderer:
         self._atom_mapping = {}
         self._entity_mapping = {}
         self._predicate_mapping = {}
+        self._bound_variables = set()
+        self._variable_names = {}
 
         # Detect FOL mode
         self._is_fol_mode = self._contains_fol(formula)
@@ -152,6 +153,8 @@ class NaturalLanguageRenderer:
         self._atom_mapping = {}
         self._entity_mapping = {}
         self._predicate_mapping = {}
+        self._bound_variables = set()
+        self._variable_names = {}
 
         # Detect FOL mode from any formula
         self._is_fol_mode = any(self._contains_fol(p) for p in premises) or self._contains_fol(conclusion)
@@ -172,12 +175,15 @@ class NaturalLanguageRenderer:
         # Render premises
         rendered_premises = []
         for premise in premises:
+            # Reset bound variables for each premise
+            self._bound_variables = set()
             text = self._render_node(premise)
             if self.config.capitalize_output and text:
                 text = text[0].upper() + text[1:]
             rendered_premises.append(text)
 
         # Render conclusion
+        self._bound_variables = set()
         conclusion_text = self._render_node(conclusion)
         if self.config.capitalize_output and conclusion_text:
             conclusion_text = conclusion_text[0].upper() + conclusion_text[1:]
@@ -220,10 +226,10 @@ class NaturalLanguageRenderer:
                 else:
                     self._predicate_mapping[formula.identifier] = formula.identifier.lower()
 
-            # Map entity/variable names
+            # Map entity/variable names (constants only)
             for var in formula.variables:
                 if var not in self._entity_mapping:
-                    # Check if it's a constant (a, b, c, d) or variable (x, y, z)
+                    # Check if it's a constant (a, b, c, d) - not a bound variable
                     if var in ["a", "b", "c", "d"]:
                         # It's a constant - map to an entity name
                         if self.pool.entities and self.pool.entities.names:
@@ -235,9 +241,7 @@ class NaturalLanguageRenderer:
                                 self._entity_mapping[var] = random.choice(self.pool.entities.names)
                         else:
                             self._entity_mapping[var] = var.upper()
-                    else:
-                        # It's a variable - use "it" or "something"
-                        self._entity_mapping[var] = "it"
+                    # Variables (x, y, z, w) will be handled during rendering based on scope
 
         elif isinstance(formula, NegationNode):
             self._collect_fol_elements(formula.child)
@@ -245,6 +249,10 @@ class NaturalLanguageRenderer:
             self._collect_fol_elements(formula.left)
             self._collect_fol_elements(formula.right)
         elif isinstance(formula, QuantifiedNode):
+            # Assign a descriptive name to this variable if not already assigned
+            if formula.variable not in self._variable_names:
+                var_descriptions = ["x", "y", "z", "w", "v", "u"]
+                self._variable_names[formula.variable] = formula.variable
             self._collect_fol_elements(formula.body)
 
     def _assign_atoms(self, atom_ids: List[str]) -> None:
@@ -285,17 +293,24 @@ class NaturalLanguageRenderer:
             predicate = self._predicate_mapping.get(node.identifier, node.identifier.lower())
 
             if node.variables:
-                # Get entity for the variable/constant
+                # Get entity/variable for the variable/constant
                 var = node.variables[0]
-                entity = self._entity_mapping.get(var, var)
 
-                # For variables (x, y, z), use "it" in context
-                if var in ["x", "y", "z", "w"]:
-                    return f"it is {predicate}"
-                else:
-                    # For constants (a, b, c, d), use the entity name
+                # Check if it's a bound variable or a constant
+                if var in self._bound_variables:
+                    # It's a bound variable - use the variable name directly
+                    template = random.choice(self.config.predicate_with_var_templates) if self.config.vary_templates else self.config.predicate_with_var_templates[0]
+                    return template.format(var=var, predicate=predicate)
+                elif var in ["a", "b", "c", "d"]:
+                    # It's a constant - use the mapped entity name
+                    entity = self._entity_mapping.get(var, var.upper())
                     template = random.choice(self.config.predicate_templates) if self.config.vary_templates else self.config.predicate_templates[0]
                     return template.format(entity=entity, predicate=predicate)
+                else:
+                    # It's an unbound variable (shouldn't happen in well-formed formulas)
+                    # but handle gracefully
+                    template = random.choice(self.config.predicate_with_var_templates) if self.config.vary_templates else self.config.predicate_with_var_templates[0]
+                    return template.format(var=var, predicate=predicate)
             else:
                 return f"is {predicate}"
 
@@ -309,7 +324,7 @@ class NaturalLanguageRenderer:
         return node.identifier
 
     def _render_negation(self, node: NegationNode) -> str:
-        """Render a negation."""
+        """Render a negation with brackets for disambiguation."""
         # Special handling for FOL predicate negation
         if self._is_fol_mode and isinstance(node.child, AtomNode) and node.child.is_predicate:
             atom = node.child
@@ -317,13 +332,18 @@ class NaturalLanguageRenderer:
 
             if atom.variables:
                 var = atom.variables[0]
-                entity = self._entity_mapping.get(var, var)
 
-                if var in ["x", "y", "z", "w"]:
-                    return f"it is not {predicate}"
-                else:
+                if var in self._bound_variables:
+                    # Bound variable
+                    return "{it is not the case that " + var + " is " + predicate + "}"
+                elif var in ["a", "b", "c", "d"]:
+                    # Constant
+                    entity = self._entity_mapping.get(var, var.upper())
                     template = random.choice(self.config.not_predicate_templates) if self.config.vary_templates else self.config.not_predicate_templates[0]
-                    return template.format(entity=entity, predicate=predicate)
+                    inner = template.format(entity=entity, predicate=predicate)
+                    return "{" + inner + "}"
+                else:
+                    return "{it is not the case that " + var + " is " + predicate + "}"
 
         child_text = self._render_node(node.child)
 
@@ -333,10 +353,11 @@ class NaturalLanguageRenderer:
         else:
             template = templates[0]
 
-        return template.format(child=child_text)
+        inner = template.format(child=child_text)
+        return "{" + inner + "}"
 
     def _render_binary(self, node: BinaryNode) -> str:
-        """Render a binary connective."""
+        """Render a binary connective with brackets for disambiguation."""
         left_text = self._render_node(node.left)
         right_text = self._render_node(node.right)
 
@@ -357,48 +378,22 @@ class NaturalLanguageRenderer:
         else:
             template = templates[0]
 
-        return template.format(
+        inner = template.format(
             left=left_text,
             right=right_text,
             connective=node.connective.value
         )
+        return "{" + inner + "}"
 
     def _render_quantified(self, node: QuantifiedNode) -> str:
-        """Render a quantified formula."""
-        # Check for special FOL patterns
+        """Render a quantified formula with brackets for disambiguation."""
+        # Add the variable to bound variables before rendering body
+        self._bound_variables.add(node.variable)
 
-        # Pattern: ∀x.P(x) or ∃x.P(x) - simple quantified predicate
-        if isinstance(node.body, AtomNode) and node.body.is_predicate:
-            predicate = self._predicate_mapping.get(node.body.identifier, node.body.identifier.lower())
-
-            if node.quantifier == Quantifier.FORALL:
-                templates = self.config.forall_predicate_templates
-            else:
-                templates = self.config.exists_predicate_templates
-
-            template = random.choice(templates) if self.config.vary_templates else templates[0]
-            return template.format(predicate=predicate)
-
-        # Pattern: ∀x.(P(x) → Q(x)) - universal implication
-        if node.quantifier == Quantifier.FORALL and isinstance(node.body, BinaryNode):
-            if node.body.connective == Connective.IMPLIES:
-                # Check if both sides are simple predicates
-                if (isinstance(node.body.left, AtomNode) and node.body.left.is_predicate and
-                    isinstance(node.body.right, AtomNode) and node.body.right.is_predicate):
-                    antecedent = self._predicate_mapping.get(
-                        node.body.left.identifier, node.body.left.identifier.lower()
-                    )
-                    consequent = self._predicate_mapping.get(
-                        node.body.right.identifier, node.body.right.identifier.lower()
-                    )
-
-                    templates = self.config.forall_implies_templates
-                    template = random.choice(templates) if self.config.vary_templates else templates[0]
-                    return template.format(antecedent=antecedent, consequent=consequent)
-
-        # Default: render body and wrap with quantifier
+        # Render the body with the variable now in scope
         body_text = self._render_node(node.body)
 
+        # Choose quantifier template
         if node.quantifier == Quantifier.FORALL:
             templates = self.config.forall_templates
         else:
@@ -406,11 +401,16 @@ class NaturalLanguageRenderer:
 
         template = random.choice(templates) if self.config.vary_templates else templates[0]
 
-        return template.format(
+        inner = template.format(
             var=node.variable,
-            domain="things",
             body=body_text
         )
+
+        # Note: we don't remove the variable from bound_variables here
+        # because in a single formula rendering, once bound it stays bound
+        # (this matches standard variable scoping semantics)
+
+        return "{" + inner + "}"
 
 
 class InferenceRenderer:
