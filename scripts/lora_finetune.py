@@ -257,7 +257,7 @@ class TrainConfig:
     greater_is_better: bool = False
     early_stopping_patience: int = 3
     resume_from_checkpoint: Optional[str] = None
-    use_wandb: bool = False
+    use_wandb: bool = True
     wandb_project: str = "syllm-lora-finetune"
     wandb_run_name: Optional[str] = None
     seed: int = 42
