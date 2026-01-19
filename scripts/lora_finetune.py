@@ -141,6 +141,12 @@ MODEL_REGISTRY = {
         "target_modules": ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         "max_length": 8192,
     },
+    "mistral-small-24b-instruct": {
+        "name": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+        "description": "Mistral Small 3.2 24B Instruct (supports 128k context)",
+        "target_modules": ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        "max_length": 8192,  # Training default; model supports up to 128k
+    },
     # Qwen models
     "qwen2-7b": {
         "name": "Qwen/Qwen2-7B",
@@ -203,13 +209,9 @@ class DataConfig:
     val_split: float = 0.1
     test_split: float = 0.1
     seed: int = 42
-    use_logic_datasets: bool = False
-    logic_datasets: List[str] = field(default_factory=lambda: ["logiqa", "logicnli"])
     preprocessing_num_workers: int = 4
     # Inference-focused training: only compute loss on conclusions
     conclusion_only_loss: bool = True
-    # Mistral model name for chat template
-    mistral_model: str = "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
     # System prompt for logical reasoning
     system_prompt: str = "You are a logical reasoning assistant. Given the following premises, derive their valid conclusion."
 
@@ -265,12 +267,13 @@ class TrainConfig:
 class DataLoader:
     """Data loader with Mistral chat template support for logical reasoning training."""
 
-    def __init__(self, config: DataConfig, tokenizer):
+    def __init__(self, config: DataConfig, tokenizer, model_name: str):
         self.config = config
         self.tokenizer = tokenizer
-        # Initialize Mistral tokenizer for chat template formatting
-        print(f"Initializing Mistral tokenizer from {config.mistral_model}...")
-        self.mistral_tokenizer = MistralTokenizer.from_hf_hub(config.mistral_model)
+        self.model_name = model_name
+        # Initialize Mistral tokenizer for chat template formatting (same model as being finetuned)
+        print(f"Initializing Mistral tokenizer from {model_name}...")
+        self.mistral_tokenizer = MistralTokenizer.from_hf_hub(model_name)
 
     def load_jsonl(self, path: str) -> List[Dict[str, Any]]:
         """Load data from JSONL file."""
@@ -343,6 +346,9 @@ class DataLoader:
         User message: <PREMISE> premise1 </PREMISE> <PREMISE> premise2 </PREMISE> ...
         Assistant message: <CONCLUSION> conclusion </CONCLUSION>
 
+        The Mistral Small 3.x chat format (V7-Tekken) is:
+            <s>[SYSTEM_PROMPT]{system}[/SYSTEM_PROMPT][INST]{user_message}[/INST]{assistant_response}</s>
+
         Returns:
             Tuple of (full_text, assistant_response) where assistant_response is
             the portion we want to compute loss on (the conclusion).
@@ -358,19 +364,19 @@ class DataLoader:
         user_content = self._format_user_message(premises)
         assistant_content = self._format_assistant_message(conclusion)
 
-        # Build Mistral chat messages
+        # Build Mistral chat messages (without AssistantMessage - we append it manually)
         messages = [
             SystemMessage(content=self.config.system_prompt),
             UserMessage(content=user_content),
-            AssistantMessage(content=assistant_content),
         ]
 
-        # Encode using Mistral tokenizer to get properly formatted text
+        # Encode using Mistral tokenizer to get the prompt
         request = ChatCompletionRequest(messages=messages)
         encoded = self.mistral_tokenizer.encode_chat_completion(request)
 
-        # The full formatted text with proper Mistral chat template
-        full_text = encoded.text
+        # Build full training text: prompt + assistant response + EOS
+        # Format: <s>[SYSTEM_PROMPT]...[/SYSTEM_PROMPT][INST]...[/INST]{response}</s>
+        full_text = encoded.text + assistant_content + "</s>"
 
         return full_text, assistant_content
 
@@ -408,14 +414,6 @@ class DataLoader:
             val_data.extend(hf_data.get("val", []))
             test_data.extend(hf_data.get("test", []))
 
-        # Load logic datasets if enabled
-        if self.config.use_logic_datasets:
-            print("Loading logic reasoning datasets...")
-            logic_data = self._load_logic_datasets()
-            train_data.extend(logic_data.get("train", []))
-            val_data.extend(logic_data.get("val", []))
-            test_data.extend(logic_data.get("test", []))
-
         # If we have data but no splits, create them
         if train_data and not val_data and not test_data:
             print("Creating train/val/test splits...")
@@ -444,30 +442,6 @@ class DataLoader:
                         result[target_key].append(dict(example))
         except Exception as e:
             print(f"Warning: Could not load HuggingFace dataset: {e}")
-
-        return result
-
-    def _load_logic_datasets(self) -> Dict[str, List[Dict]]:
-        """Load logic reasoning datasets."""
-        from src.data.logic_datasets import LogicDatasetAggregator
-
-        result = {"train": [], "val": [], "test": []}
-        aggregator = LogicDatasetAggregator()
-
-        for split in ["train", "validation", "test"]:
-            try:
-                target_key = "val" if split == "validation" else split
-                annotations = aggregator.load_all(split=split, datasets=self.config.logic_datasets)
-                for ann in annotations:
-                    # Convert DAGAnnotation to dict
-                    if hasattr(ann, "to_dict"):
-                        result[target_key].append(ann.to_dict())
-                    elif hasattr(ann, "__dict__"):
-                        result[target_key].append(ann.__dict__)
-                    else:
-                        result[target_key].append(dict(ann))
-            except Exception as e:
-                print(f"Warning: Could not load logic datasets for {split}: {e}")
 
         return result
 
@@ -538,10 +512,8 @@ class DataLoader:
         """
         Tokenize a dataset with conclusion-only loss masking for Mistral chat format.
 
-        The Mistral chat format is:
-            <s>[INST] {system}
-
-            {user_message}[/INST] {assistant_response}</s>
+        The Mistral Small 3.x chat format (V7-Tekken) is:
+            <s>[SYSTEM_PROMPT]{system}[/SYSTEM_PROMPT][INST]{user_message}[/INST]{assistant_response}</s>
 
         When conclusion_only_loss is True, we mask all tokens EXCEPT the assistant
         response (everything after [/INST]), so the model only learns to generate
@@ -765,11 +737,11 @@ def train(
     print("\n=== Loading Data ===")
     if data_config.conclusion_only_loss:
         print("Training mode: ASSISTANT-ONLY (loss computed only on assistant response)")
-        print(f"  Using Mistral chat template from: {data_config.mistral_model}")
+        print(f"  Using Mistral chat template from: {model_info['name']}")
         print(f"  Format: <PREMISE>...</PREMISE> -> <CONCLUSION>...</CONCLUSION>")
     else:
         print("Training mode: FULL TEXT (loss computed on all tokens)")
-    data_loader = DataLoader(data_config, tokenizer)
+    data_loader = DataLoader(data_config, tokenizer, model_info["name"])
     datasets = data_loader.create_datasets()
 
     # Tokenize datasets
@@ -966,7 +938,7 @@ Training Mode:
     )
 
     # Model selection
-    parser.add_argument("--model", "-m", type=str, default="deepseek-v3",
+    parser.add_argument("--model", "-m", type=str, default="mistralai/Mistral-Small-3.2-24B-Instruct-2506",
                        help="Model key from registry or HuggingFace model path")
     parser.add_argument("--list-models", action="store_true",
                        help="List available models and exit")
@@ -976,8 +948,6 @@ Training Mode:
     parser.add_argument("--val-path", type=str, help="Path to validation data")
     parser.add_argument("--test-path", type=str, help="Path to test data")
     parser.add_argument("--dataset", type=str, help="HuggingFace dataset name")
-    parser.add_argument("--use-logic-datasets", action="store_true",
-                       help="Include logic reasoning datasets (LogiQA, etc.)")
 
     # LoRA configuration
     parser.add_argument("--lora-rank", "-r", type=int, default=16,
@@ -996,9 +966,6 @@ Training Mode:
                        help="Only compute loss on assistant response (default: True)")
     parser.add_argument("--train-on-all", action="store_true",
                        help="Train on all tokens, not just assistant response (disables conclusion-only-loss)")
-    parser.add_argument("--mistral-model", type=str,
-                       default="mistralai/Mistral-Small-3.2-24B-Instruct-2506",
-                       help="Mistral model for chat template formatting")
     parser.add_argument("--system-prompt", type=str,
                        default="You are a logical reasoning assistant. Given the following premises, derive their valid conclusion.",
                        help="System prompt for logical reasoning training")
@@ -1060,12 +1027,9 @@ def main():
         test_path=args.test_path or file_config.get("data", {}).get("test_path"),
         dataset_name=args.dataset or file_config.get("data", {}).get("dataset"),
         max_length=args.max_length,
-        use_logic_datasets=args.use_logic_datasets or file_config.get("data", {}).get("use_logic_datasets", False),
         seed=args.seed,
         # Inference-focused training settings
         conclusion_only_loss=not args.train_on_all,
-        # Mistral chat template settings
-        mistral_model=args.mistral_model,
         system_prompt=args.system_prompt,
     )
 
@@ -1100,13 +1064,13 @@ def main():
     )
 
     # Validate we have data
-    if not data_config.train_path and not data_config.dataset_name and not data_config.use_logic_datasets:
-        print("Error: Must provide --train-path, --dataset, or --use-logic-datasets")
+    if not data_config.train_path and not data_config.dataset_name:
+        print("Error: Must provide --train-path or --dataset")
         print("Run with --help for usage information")
         sys.exit(1)
 
     # Get model key
-    model_key = args.model or file_config.get("model", {}).get("name", "deepseek-v3")
+    model_key = args.model or file_config.get("model", {}).get("name", "mistralai/Mistral-Small-3.2-24B-Instruct-2506")
 
     # Run training
     output_path = train(
