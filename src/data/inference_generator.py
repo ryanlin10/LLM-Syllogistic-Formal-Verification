@@ -302,9 +302,12 @@ class InferenceGenerator:
 
     def _gen_disjunction_intro(self) -> Inference:
         """
-        Disjunction Introduction: P ⊢ P∨Q
+        Disjunction Introduction: P, Q ⊢ P∨Q
 
-        If P, then P or Q (for any Q).
+        If P and Q are both true, then P or Q.
+
+        Note: Changed from standard P ⊢ P∨Q to ensure all atoms in conclusion
+        appear in premises, avoiding ambiguity about which Q to use.
         """
         p = self._gen_subformula()
         q = self._gen_subformula()
@@ -312,10 +315,10 @@ class InferenceGenerator:
         disjunction = make_disjunction(p, q)
 
         return Inference(
-            premises=[p.copy()],
+            premises=[p.copy(), q.copy()],
             conclusion=disjunction,
             pattern=InferencePattern.DISJUNCTION_INTRO,
-            formal_notation="P ⊢ P∨Q"
+            formal_notation="P, Q ⊢ P∨Q"
         )
 
     def _gen_double_negation_elim(self) -> Inference:
@@ -437,31 +440,37 @@ class InferenceGenerator:
 
     def _gen_universal_instantiation(self) -> Inference:
         """
-        Universal Instantiation: ∀x.P(x) ⊢ P(a)
+        Universal Instantiation: ∀x.P(x), Q(a) ⊢ P(a)
 
-        All things have property P. Therefore, specific thing 'a' has property P.
-        Example: All birds fly. Tweety is a bird. Therefore, Tweety flies.
+        All things have property P. Thing 'a' has property Q. Therefore, 'a' has property P.
+        Example: All birds fly. Tweety is yellow. Therefore, Tweety flies.
+
+        Note: Added Q(a) premise to ensure constant 'a' appears in premises,
+        avoiding ambiguity about which entity to instantiate.
         """
         var = random.choice(self.VARIABLES)
         const = random.choice(self.CONSTANTS)
-        pred = random.choice(self.PREDICATES)
+        pred_p, pred_q = random.sample(self.PREDICATES, 2)
 
         # ∀x.P(x)
-        p_of_x = self._gen_predicate(pred, [var])
+        p_of_x = self._gen_predicate(pred_p, [var])
         forall_p = QuantifiedNode(
             quantifier=Quantifier.FORALL,
             variable=var,
             body=p_of_x
         )
 
+        # Q(a) - introduces the constant 'a' in premises
+        q_of_a = self._gen_predicate(pred_q, [const])
+
         # P(a)
-        p_of_a = self._gen_predicate(pred, [const])
+        p_of_a = self._gen_predicate(pred_p, [const])
 
         return Inference(
-            premises=[forall_p],
+            premises=[forall_p, q_of_a],
             conclusion=p_of_a,
             pattern=InferencePattern.UNIVERSAL_INSTANTIATION,
-            formal_notation=f"∀{var}.{pred}({var}) ⊢ {pred}({const})",
+            formal_notation=f"∀{var}.{pred_p}({var}), {pred_q}({const}) ⊢ {pred_p}({const})",
             logic_order=LogicOrder.FIRST_ORDER
         )
 
