@@ -2,7 +2,7 @@
 
 # Model Configuration
 model:
-  base_model: "deepseek-ai/deepseek-v3"  # Base model path
+  base_model: "mistralai/Mistral-Small-3.2-24B-Instruct-2506"  # Base model path
   max_length: 2048
   use_lora: true
   lora_rank: 16

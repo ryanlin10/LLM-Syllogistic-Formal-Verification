@@ -1,7 +1,5 @@
 """Inference modules for model prediction."""
 
-from .predictor import StructuredLLMPredictor
+from .predictor import VLLMPredictor
 
-__all__ = ["StructuredLLMPredictor"]
-
-
+__all__ = ["VLLMPredictor"]

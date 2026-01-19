@@ -1,172 +1,109 @@
-"""Inference pipeline for generating structured outputs."""
+"""Inference using vLLM for efficient text generation."""
 
-import json
-import yaml
-import torch
-from typing import Dict, Any, Optional, List
-from pathlib import Path
-
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from peft import PeftModel
-
-from ..data.schema import safe_parse_model_output, format_prompt
-from ..verification.verifier import VerifierPipeline, VerifierConfig
-from ..retrieval.retriever import DocumentRetriever, RetrievalConfig
+from typing import Optional, List
+from vllm import LLM
+from vllm.sampling_params import SamplingParams
 
 
-class StructuredLLMPredictor:
-    """Predictor for structured premise-conclusion outputs."""
-    
+class VLLMPredictor:
+    """Simple predictor using vLLM for efficient inference."""
+
     def __init__(
         self,
         model_path: str,
-        verifier_config: Optional[VerifierConfig] = None,
-        retriever: Optional[DocumentRetriever] = None,
-        config_path: str = "./config.yaml"
+        tensor_parallel_size: int = 1,
+        gpu_memory_utilization: float = 0.9,
+        max_model_len: Optional[int] = None,
     ):
-        self.config_path = config_path
-        
-        # Load config with environment variable support
-        from ..utils.config_loader import load_config
-        self.config = load_config(config_path)
-        
-        # Load model
-        print(f"Loading model from {model_path}...")
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        
-        # Check if LoRA weights exist
-        lora_path = Path(model_path) / "adapter_model.bin"
-        if lora_path.exists():
-            # Load base model first
-            base_model = AutoModelForCausalLM.from_pretrained(
-                self.config["model"]["base_model"],
-                torch_dtype=torch.float16,
-                device_map="auto",
-                trust_remote_code=True
-            )
-            self.model = PeftModel.from_pretrained(base_model, model_path)
-        else:
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_path,
-                torch_dtype=torch.float16,
-                device_map="auto",
-                trust_remote_code=True
-            )
-        
-        self.model.eval()
-        
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-        
-        # Setup verifier
-        if verifier_config is None:
-            verifier_config = VerifierConfig(**self.config["verifier"])
-        self.verifier = VerifierPipeline(verifier_config)
-        
-        # Setup retriever
-        self.retriever = retriever
-        if retriever is None and self.config.get("retrieval"):
-            try:
-                retrieval_config = RetrievalConfig(**self.config["retrieval"])
-                self.retriever = DocumentRetriever(retrieval_config)
-                self.retriever.load_index()
-            except Exception as e:
-                print(f"Warning: Could not load retriever: {e}")
-                self.retriever = None
-        
-        # System prompt
-        self.system_prompt = self.config.get("prompts", {}).get("system_prompt")
-    
+        """
+        Initialize the vLLM predictor.
+
+        Args:
+            model_path: HuggingFace model path or local path
+            tensor_parallel_size: Number of GPUs for tensor parallelism
+            gpu_memory_utilization: Fraction of GPU memory to use
+            max_model_len: Maximum sequence length (None for model default)
+        """
+        self.model_path = model_path
+        self.llm = LLM(
+            model=model_path,
+            tokenizer_mode="mistral",
+            tensor_parallel_size=tensor_parallel_size,
+            gpu_memory_utilization=gpu_memory_utilization,
+            max_model_len=max_model_len,
+            trust_remote_code=True,
+        )
+
     def generate(
         self,
-        question: str,
-        context: Optional[str] = None,
-        use_retrieval: bool = True,
-        verify: bool = True,
-        max_new_tokens: int = 512,
+        message: str,
+        system_prompt: Optional[str] = None,
+        max_tokens: int = 512,
         temperature: float = 0.7,
-        top_p: float = 0.9
-    ) -> Dict[str, Any]:
-        """Generate structured output."""
-        # Retrieve context if needed
-        if use_retrieval and self.retriever:
-            retrieved_context = self.retriever.retrieve_for_context(question)
-            if context:
-                context = f"{context}\n\n{retrieved_context}"
-            else:
-                context = retrieved_context
-        
-        # Format prompt
-        prompt = format_prompt(context or "", question, self.system_prompt)
-        
-        # Tokenize
-        inputs = self.tokenizer(
-            prompt,
-            return_tensors="pt",
-            truncation=True,
-            max_length=2048
+        top_p: float = 0.9,
+    ) -> str:
+        """
+        Generate a response for a single message.
+
+        Args:
+            message: User message/prompt
+            system_prompt: Optional system prompt
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            top_p: Top-p sampling parameter
+
+        Returns:
+            Raw generated text
+        """
+        messages = self._build_messages(message, system_prompt)
+
+        sampling_params = SamplingParams(
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
         )
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
-        
-        # Generate
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                do_sample=True,
-                pad_token_id=self.tokenizer.eos_token_id,
-                eos_token_id=self.tokenizer.eos_token_id
-            )
-        
-        # Decode
-        generated_text = self.tokenizer.decode(
-            outputs[0][inputs["input_ids"].shape[1]:],
-            skip_special_tokens=True
-        )
-        
-        # Parse
-        parsed, parse_error = safe_parse_model_output(generated_text)
-        
-        result = {
-            "question": question,
-            "context": context,
-            "raw_output": generated_text,
-            "parsed": parsed,
-            "parse_error": parse_error
-        }
-        
-        # Verify if requested
-        if verify and parsed:
-            # Retrieve evidence for premises if retriever available
-            evidence_spans = None
-            if self.retriever and parsed.get("premises"):
-                premises = parsed.get("premises", [])
-                evidence_spans = []
-                for premise in premises:
-                    premise_text = premise if isinstance(premise, str) else premise.get("text", "")
-                    evidence = self.retriever.link_premise_to_evidence(premise_text)
-                    evidence_spans.append(evidence)
-            
-            verdict = self.verifier.verify_output(parsed, evidence_spans)
-            result["verification"] = verdict
-        else:
-            result["verification"] = None
-        
-        return result
-    
+
+        outputs = self.llm.chat(messages, sampling_params=sampling_params)
+        return outputs[0].outputs[0].text
+
     def generate_batch(
         self,
-        questions: List[str],
-        contexts: Optional[List[str]] = None,
-        **kwargs
-    ) -> List[Dict[str, Any]]:
-        """Generate outputs for a batch of questions."""
-        results = []
-        for i, question in enumerate(questions):
-            context = contexts[i] if contexts and i < len(contexts) else None
-            result = self.generate(question, context, **kwargs)
-            results.append(result)
-        return results
+        messages: List[str],
+        system_prompt: Optional[str] = None,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+    ) -> List[str]:
+        """
+        Generate responses for multiple messages.
 
+        Args:
+            messages: List of user messages
+            system_prompt: Optional system prompt (applied to all)
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            top_p: Top-p sampling parameter
+
+        Returns:
+            List of raw generated texts
+        """
+        conversations = [self._build_messages(msg, system_prompt) for msg in messages]
+
+        sampling_params = SamplingParams(
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+        )
+
+        outputs = self.llm.chat(conversations, sampling_params=sampling_params)
+        return [output.outputs[0].text for output in outputs]
+
+    def _build_messages(
+        self, message: str, system_prompt: Optional[str] = None
+    ) -> List[dict]:
+        """Build message list for chat API."""
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": message})
+        return messages
