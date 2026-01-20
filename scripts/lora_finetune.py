@@ -141,20 +141,12 @@ MODEL_REGISTRY = {
         "target_modules": ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         "max_length": 8192,
     },
-<<<<<<< HEAD
-    "mistral-small-24b-instruct": {
-        "name": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
-        "description": "Mistral Small 3.2 24B Instruct (supports 128k context)",
-        "target_modules": ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-        "max_length": 8192,  # Training default; model supports up to 128k
-=======
     "mistral-small-24b": {
         "name": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
         "description": "Mistral Small 3.2 24B Instruct",
         "target_modules": ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         "max_length": 32768,
         "model_class": "Mistral3ForConditionalGeneration",
->>>>>>> 625985ea5b0abb84680dd26218cd339322087894
     },
     # Qwen models
     "qwen2-7b": {
@@ -379,14 +371,9 @@ class DataLoader:
             UserMessage(content=user_content),
         ]
 
-<<<<<<< HEAD
-        # Encode using Mistral tokenizer to get the prompt
-        request = ChatCompletionRequest(messages=messages)
-=======
         # Encode using Mistral tokenizer to get properly formatted text
         # continue_final_message=True allows assistant message as final message (for training)
         request = ChatCompletionRequest(messages=messages, continue_final_message=True)
->>>>>>> 625985ea5b0abb84680dd26218cd339322087894
         encoded = self.mistral_tokenizer.encode_chat_completion(request)
 
         # Build full training text: prompt + assistant response + EOS
