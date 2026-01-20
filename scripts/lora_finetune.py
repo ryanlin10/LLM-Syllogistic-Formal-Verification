@@ -1010,7 +1010,7 @@ Training Mode:
     # Logging and saving
     parser.add_argument("--logging-steps", type=int, default=10, help="Logging frequency")
     parser.add_argument("--save-steps", type=int, default=500, help="Checkpoint save frequency")
-    parser.add_argument("--eval-steps", type=int, default=30, help="Evaluation frequency")
+    parser.add_argument("--eval-steps", type=int, default=100, help="Evaluation frequency (must divide save-steps)")
     parser.add_argument("--use-wandb", action="store_true", help="Enable Weights & Biases logging")
     parser.add_argument("--wandb-project", type=str, default="syllm-lora-finetune",
                        help="W&B project name")
