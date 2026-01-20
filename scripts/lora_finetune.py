@@ -173,8 +173,13 @@ MODEL_REGISTRY = {
 
 def get_model_info(model_key: str) -> Dict[str, Any]:
     """Get model info from registry or return custom model config."""
+    # Check registry by key
     if model_key in MODEL_REGISTRY:
         return MODEL_REGISTRY[model_key]
+    # Check if model_key matches a registry entry by HF name
+    for key, info in MODEL_REGISTRY.items():
+        if info.get("name") == model_key:
+            return info
     # Assume it's a HuggingFace model path
     return {
         "name": model_key,
@@ -952,7 +957,7 @@ Training Mode:
     )
 
     # Model selection
-    parser.add_argument("--model", "-m", type=str, default="mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+    parser.add_argument("--model", "-m", type=str, default="mistral-small-24b",
                        help="Model key from registry or HuggingFace model path")
     parser.add_argument("--list-models", action="store_true",
                        help="List available models and exit")
