@@ -37,7 +37,6 @@ class Annotation:
     premises: List[Premise]
     conclusion: str
     verifier_notes: Optional[str] = None
-    confidence: float = 1.0
     annotator_id: Optional[str] = None
     timestamp: Optional[str] = None
 
@@ -51,7 +50,6 @@ class Annotation:
             "premises": [p.to_dict() for p in self.premises],
             "conclusion": self.conclusion,
             "verifier_notes": self.verifier_notes,
-            "confidence": self.confidence,
             "annotator_id": self.annotator_id,
             "timestamp": self.timestamp
         }
@@ -77,7 +75,6 @@ class Annotation:
             premises=premises,
             conclusion=conclusion_text,
             verifier_notes=data.get("verifier_notes"),
-            confidence=data.get("confidence", 1.0),
             annotator_id=data.get("annotator_id"),
             timestamp=data.get("timestamp")
         )
@@ -111,7 +108,6 @@ ANNOTATION_SCHEMA = {
         },
         "conclusion": {"type": "string"},
         "verifier_notes": {"type": "string"},
-        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "annotator_id": {"type": "string"},
         "timestamp": {"type": "string"}
     }

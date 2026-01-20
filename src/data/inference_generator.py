@@ -25,7 +25,7 @@ class InferencePattern(Enum):
     HYPOTHETICAL_SYLLOGISM = "hypothetical_syllogism"
     DISJUNCTIVE_SYLLOGISM = "disjunctive_syllogism"
     CONJUNCTION_INTRO = "conjunction_intro"
-    CONJUNCTION_ELIM = "conjunction_elim"
+    CONJUNCTION_ELIM = "conjunction_elim"  # Not used as final step
     DISJUNCTION_INTRO = "disjunction_intro"
     DOUBLE_NEGATION_ELIM = "double_negation_elim"
     CONSTRUCTIVE_DILEMMA = "constructive_dilemma"
@@ -36,7 +36,7 @@ class InferencePattern(Enum):
     # First-order logic patterns (1st order)
     UNIVERSAL_INSTANTIATION = "universal_instantiation"
     UNIVERSAL_MODUS_PONENS = "universal_modus_ponens"
-    EXISTENTIAL_GENERALIZATION = "existential_generalization"
+    EXISTENTIAL_GENERALIZATION = "existential_generalization"  # Not used as final step
     UNIVERSAL_SYLLOGISM = "universal_syllogism"
     UNIVERSAL_CONTRAPOSITION = "universal_contraposition"
     EXISTENTIAL_SYLLOGISM = "existential_syllogism"
@@ -49,7 +49,6 @@ PROPOSITIONAL_PATTERNS = [
     InferencePattern.HYPOTHETICAL_SYLLOGISM,
     InferencePattern.DISJUNCTIVE_SYLLOGISM,
     InferencePattern.CONJUNCTION_INTRO,
-    InferencePattern.CONJUNCTION_ELIM,
     InferencePattern.DISJUNCTION_INTRO,
     InferencePattern.DOUBLE_NEGATION_ELIM,
     InferencePattern.CONSTRUCTIVE_DILEMMA,
@@ -61,7 +60,6 @@ PROPOSITIONAL_PATTERNS = [
 FOL_PATTERNS = [
     InferencePattern.UNIVERSAL_INSTANTIATION,
     InferencePattern.UNIVERSAL_MODUS_PONENS,
-    InferencePattern.EXISTENTIAL_GENERALIZATION,
     InferencePattern.UNIVERSAL_SYLLOGISM,
     InferencePattern.UNIVERSAL_CONTRAPOSITION,
     InferencePattern.EXISTENTIAL_SYLLOGISM,
