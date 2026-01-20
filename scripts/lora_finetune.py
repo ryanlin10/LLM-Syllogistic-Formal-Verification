@@ -376,9 +376,9 @@ class DataLoader:
             UserMessage(content=user_content),
         ]
 
-        # Encode using Mistral tokenizer to get properly formatted text
-        # continue_final_message=True allows assistant message as final message (for training)
-        request = ChatCompletionRequest(messages=messages, continue_final_message=True)
+        # Encode using Mistral tokenizer to get properly formatted prompt
+        # This gives us: <s>[SYSTEM_PROMPT]...[/SYSTEM_PROMPT][INST]...[/INST]
+        request = ChatCompletionRequest(messages=messages)
         encoded = self.mistral_tokenizer.encode_chat_completion(request)
 
         # Build full training text: prompt + assistant response + EOS
