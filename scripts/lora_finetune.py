@@ -146,6 +146,7 @@ MODEL_REGISTRY = {
         "description": "Mistral Small 3.2 24B Instruct (supports 128k context)",
         "target_modules": ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         "max_length": 8192,  # Training default; model supports up to 128k
+        "model_class": "Mistral3ForConditionalGeneration",
     },
     # Qwen models
     "qwen2-7b": {
@@ -172,8 +173,13 @@ MODEL_REGISTRY = {
 
 def get_model_info(model_key: str) -> Dict[str, Any]:
     """Get model info from registry or return custom model config."""
+    # Check registry by key
     if model_key in MODEL_REGISTRY:
         return MODEL_REGISTRY[model_key]
+    # Check if model_key matches a registry entry by HF name
+    for key, info in MODEL_REGISTRY.items():
+        if info.get("name") == model_key:
+            return info
     # Assume it's a HuggingFace model path
     return {
         "name": model_key,
