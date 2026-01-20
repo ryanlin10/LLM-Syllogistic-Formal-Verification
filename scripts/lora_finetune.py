@@ -141,12 +141,11 @@ MODEL_REGISTRY = {
         "target_modules": ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         "max_length": 8192,
     },
-    "mistral-small-24b": {
+    "mistral-small-24b-instruct": {
         "name": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
-        "description": "Mistral Small 3.2 24B Instruct",
+        "description": "Mistral Small 3.2 24B Instruct (supports 128k context)",
         "target_modules": ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-        "max_length": 32768,
-        "model_class": "Mistral3ForConditionalGeneration",
+        "max_length": 8192,  # Training default; model supports up to 128k
     },
     # Qwen models
     "qwen2-7b": {
@@ -173,13 +172,8 @@ MODEL_REGISTRY = {
 
 def get_model_info(model_key: str) -> Dict[str, Any]:
     """Get model info from registry or return custom model config."""
-    # Check registry by key
     if model_key in MODEL_REGISTRY:
         return MODEL_REGISTRY[model_key]
-    # Check if model_key matches a registry entry by HF name
-    for key, info in MODEL_REGISTRY.items():
-        if info.get("name") == model_key:
-            return info
     # Assume it's a HuggingFace model path
     return {
         "name": model_key,
@@ -957,7 +951,7 @@ Training Mode:
     )
 
     # Model selection
-    parser.add_argument("--model", "-m", type=str, default="mistral-small-24b",
+    parser.add_argument("--model", "-m", type=str, default="mistralai/Mistral-Small-3.2-24B-Instruct-2506",
                        help="Model key from registry or HuggingFace model path")
     parser.add_argument("--list-models", action="store_true",
                        help="List available models and exit")
@@ -992,7 +986,7 @@ Training Mode:
     # Training configuration
     parser.add_argument("--output-dir", type=str, default="./models/lora_finetuned",
                        help="Output directory for saved models")
-    parser.add_argument("--epochs", type=int, default=3, help="Number of training epochs")
+    parser.add_argument("--epochs", type=int, default=1, help="Number of training epochs")
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size per device")
     parser.add_argument("--grad-accum", type=int, default=4, help="Gradient accumulation steps")
     parser.add_argument("--learning-rate", type=float, default=2e-4, help="Learning rate")
@@ -1010,7 +1004,7 @@ Training Mode:
     # Logging and saving
     parser.add_argument("--logging-steps", type=int, default=10, help="Logging frequency")
     parser.add_argument("--save-steps", type=int, default=500, help="Checkpoint save frequency")
-    parser.add_argument("--eval-steps", type=int, default=500, help="Evaluation frequency")
+    parser.add_argument("--eval-steps", type=int, default=30, help="Evaluation frequency")
     parser.add_argument("--use-wandb", action="store_true", help="Enable Weights & Biases logging")
     parser.add_argument("--wandb-project", type=str, default="syllm-lora-finetune",
                        help="W&B project name")
