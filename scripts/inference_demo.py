@@ -35,7 +35,9 @@ def main():
     config_path = Path(__file__).parent.parent / "config.yaml"
     config = load_config(str(config_path))
 
-    model_path = args.model or config["model"]["base_model"]
+    model_path = args.model or config["model"].get("inference_model") or config["model"]["base_model"]
+
+    print(f"Loading model: {model_path}")
 
     predictor = VLLMPredictor(
         model_path=model_path,

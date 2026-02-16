@@ -2,120 +2,17 @@
 
 # Model Configuration
 model:
-  base_model: "mistralai/Mistral-Small-3.2-24B-Instruct-2506"  # Base model path
-  max_length: 2048
-  use_lora: true
-  lora_rank: 16
-  lora_alpha: 32
-  lora_dropout: 0.1
-  target_modules: ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-
-# Training Configuration
-training:
-  output_dir: "./models/finetuned"
-  per_device_train_batch_size: 4
-  per_device_eval_batch_size: 4
-  gradient_accumulation_steps: 4
-  learning_rate: 2e-4
-  num_train_epochs: 3
-  warmup_steps: 500
-  logging_steps: 50
-  save_steps: 1000
-  evaluation_strategy: "steps"
-  eval_steps: 500
-  save_total_limit: 3
-  fp16: true
-  gradient_checkpointing: true
-  report_to: "wandb"  # Set to "none" to disable
-
-# RLHF Configuration
-rlhf:
-  output_dir: "./models/rlhf"
-  learning_rate: 1e-6
-  batch_size: 4
-  mini_batch_size: 2
-  gradient_accumulation_steps: 4
-  ppo_epochs: 4
-  cliprange: 0.2
-  cliprange_value: 0.2
-  gamma: 1.0
-  lam: 0.95
-  kl_penalty: "kl"  # "kl" or "full"
-  kl_init: 0.0
+  # Base model for training (used by lora_finetune.py via --model flag)
+  base_model: "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+  # Finetuned model for inference (used by inference_demo.py)
+  inference_model: "/Users/ryanlin/Desktop/SyLLM/mistralai_Mistral_Small_3.2_24B_Instruct_2506_20260120_021836"
 
 # Data Configuration
 data:
   train_path: "./data/train.jsonl"
   val_path: "./data/val.jsonl"
   test_path: "./data/test.jsonl"
-  synthetic_data_path: "./data/synthetic.jsonl"
-  # Logic datasets (LogiQA, LogicNLI, LogiBench)
-  use_logic_datasets: true
-  logic_datasets_path: "./data/logic_datasets_train.jsonl"
-  max_samples: null  # null = use all
   seed: 42
-
-# Retrieval Configuration
-retrieval:
-  index_path: "./data/retrieval_index"
-  embedding_model: "sentence-transformers/all-mpnet-base-v2"
-  top_k: 5
-  chunk_size: 512
-  chunk_overlap: 50
-
-# Verifier Configuration
-verifier:
-  premise_model_path: "./models/verifier/premise"
-  inference_model_path: "./models/verifier/inference"
-  confidence_threshold: 0.85
-  batch_size: 32
-  # Staged verification: use lightweight checks first, then symbolic
-  use_staged_verification: true
-  use_z3: true
-  use_datalog: true
-  # Repair configuration
-  enable_repair: true
-  max_repairs: 3
-  auto_approve_repairs: false  # Require human approval for repairs
-
-# Evaluation Configuration
-evaluation:
-  metrics: ["premise_precision", "premise_recall", "evidence_recall", "entailment_accuracy", "verifier_calibration"]
-  human_eval_sample: 0.1  # Fraction of test set for human evaluation
-
-# Output Schema
-schema:
-  # Legacy format (premises + conclusion)
-  required_fields: ["premises", "conclusion"]
-  premises_min: 1
-  premises_max: 10
-  conclusion_max_length: 500
-  # DAG format (premises + inference_steps + conclusion)
-  use_dag_format: true
-  max_inference_steps: 10
-  require_dependencies: true
-
-# System Prompt Template
-prompts:
-  system_prompt: |
-    You must respond only in valid JSON format. Use DAG-based reasoning structure:
-    1. "premises": array of factual statements (premises)
-    2. "inference_steps": array of reasoning steps, each with:
-       - "text": natural language description
-       - "depends_on": array of IDs of premises/steps this depends on
-    3. "conclusion": final conclusion that follows from all steps
-    
-    Each inference step must explicitly list its dependencies. Steps are verified in topological order.
-    Example structure:
-    {
-      "premises": [{"id": "p1", "text": "..."}],
-      "inference_steps": [{"id": "inf1", "text": "...", "depends_on": ["p1"]}],
-      "conclusion": "..."
-    }
-  
-  user_template: |
-    Question: {question}
-    Context: {context}
 
 # Paths
 paths:

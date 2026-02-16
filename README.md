@@ -1,62 +1,84 @@
 # SyLLM: Structured Reasoning LLM with Automated Verification
 
-A comprehensive system for fine-tuning LLMs (DeepSeek V3) to output structured reasoning in premise-conclusion format with automated verification for commercial use.
+A comprehensive system for fine-tuning LLMs to output structured reasoning in premise-conclusion format with automated verification, supporting propositional and first-order logic.
 
 ## Overview
 
 SyLLM enables LLMs to:
 - Output structured reasoning chains with explicit premises and conclusions
-- Automatically verify premise factuality and logical inference
-- Ground claims in retrieved evidence
+- Automatically verify premise factuality and logical inference using a staged pipeline (NLI, semantic parsing, symbolic solvers)
+- Ground claims in retrieved evidence via RAG
+- Generate synthetic logic reasoning datasets (propositional and first-order logic)
 - Improve reasoning quality through RLHF with verifier-based rewards
 
 ## Features
 
 - **Structured Output**: Enforces JSON format with premises and conclusions
-- **Automated Verification**: Two-stage verifier (premise + inference checking)
-- **RAG Integration**: Retrieval-augmented generation for evidence grounding
-- **Data Generation**: Synthetic data generation pipeline with adversarial examples
-- **Fine-tuning**: LoRA-based efficient fine-tuning for DeepSeek V3
-- **RLHF**: Reinforcement learning using verifier as reward model
-- **Evaluation**: Comprehensive metrics for premise accuracy, entailment, and verifier calibration
+- **Multi-Model Support**: Model registry with support for Mistral, DeepSeek, Llama, and more — switch models via CLI or `.env`
+- **Logic Reasoning**: Propositional logic (`P ^ Q -> R`) and first-order logic (`forall x. Human(x) -> Mortal(x)`)
+- **Staged Verification**: Three-stage verifier pipeline — NLI classification, semantic parsing to formal logic, and symbolic solving (Z3/Datalog)
+- **RAG Integration**: Retrieval-augmented generation with FAISS for evidence grounding
+- **Data Generation**: Synthetic data pipeline using random syntax trees and Claude API for diverse atomic propositions
+- **Fine-tuning**: LoRA-based efficient fine-tuning with automatic target module detection, mixed precision, and gradient checkpointing
+- **RLHF**: Reinforcement learning using verifier as reward model (PPO-based)
+- **Evaluation**: Comprehensive metrics for premise accuracy, entailment, verifier calibration, and parse success rate
+- **Inference**: Efficient serving with vLLM and tensor parallelism support
 
 ## Project Structure
 
 ```
 SyLLM/
-├── config.yaml              # Main configuration file
-├── requirements.txt          # Python dependencies
+├── config.yaml                  # Main configuration file
+├── requirements.txt             # Python dependencies
+├── setup.py                     # Package installation
 ├── src/
-│   ├── data/                # Data generation and curation
-│   │   ├── schema.py        # Data schema definitions
-│   │   ├── generator.py    # Synthetic data generation
-│   │   └── curation.py     # Data validation and splitting
-│   ├── retrieval/          # RAG components
-│   │   └── retriever.py    # Document retrieval with FAISS
-│   ├── verification/        # Automated verification
-│   │   └── verifier.py     # Premise and inference verifiers
-│   ├── training/           # Training scripts
-│   │   ├── finetune.py     # Fine-tuning with LoRA
-│   │   └── rlhf.py         # RLHF training
-│   ├── evaluation/         # Evaluation framework
-│   │   └── evaluator.py   # Metrics and evaluation
-│   └── inference/         # Inference pipeline
-│       └── predictor.py   # Model prediction
-├── scripts/               # Executable scripts
-│   ├── generate_data.py  # Generate synthetic data
-│   ├── prepare_data.py   # Prepare and split data
-│   ├── train_finetune.py # Run fine-tuning
-│   ├── train_rlhf.py     # Run RLHF training
-│   ├── evaluate.py       # Evaluate model
-│   └── inference_demo.py # Demo inference
-└── data/                  # Data directory (created at runtime)
+│   ├── data/                    # Data generation and curation
+│   │   ├── schema.py            # Data schema definitions
+│   │   ├── generator.py         # Synthetic data generation
+│   │   ├── curation.py          # Data validation and splitting
+│   │   ├── syntax_tree.py       # Logic formula AST (propositional/FOL)
+│   │   ├── atomic_proposition_generator.py  # Atomic propositions via Claude API
+│   │   ├── inference_generator.py  # Logic inference example generation
+│   │   ├── nl_renderer.py       # Logic formulas to natural language
+│   │   └── logic_templates.py   # Pre-defined logic patterns
+│   ├── retrieval/               # RAG components
+│   │   └── retriever.py         # Document retrieval with FAISS
+│   ├── verification/            # Automated verification
+│   │   ├── verifier.py          # NLI-based premise and inference verifiers
+│   │   ├── dag_verifier.py      # Staged verification (NLI → semantic parsing → Z3/Datalog)
+│   │   ├── semantic_parser.py   # Natural language to formal logic conversion
+│   │   └── repair.py            # JSON repair utilities
+│   ├── training/                # Training scripts
+│   │   ├── finetune.py          # Fine-tuning with LoRA
+│   │   ├── rlhf.py              # RLHF training
+│   │   └── enhanced_rlhf.py     # Advanced RLHF features
+│   ├── evaluation/              # Evaluation framework
+│   │   └── evaluator.py         # Metrics and evaluation
+│   ├── inference/               # Inference pipeline
+│   │   └── predictor.py         # vLLM-based model prediction
+│   └── utils/                   # Utilities
+│       └── config_loader.py     # YAML config loading
+├── scripts/                     # Executable scripts
+│   ├── lora_finetune.py         # Main LoRA fine-tuning script
+│   ├── generate_logic_data.py   # Generate synthetic logic data
+│   ├── generate_data.py         # Generate synthetic data
+│   ├── prepare_data.py          # Prepare and split data
+│   ├── train_finetune.py        # Run fine-tuning (wrapper)
+│   ├── train_rlhf.py            # Run RLHF training
+│   ├── evaluate.py              # Evaluate model
+│   ├── inference_demo.py        # Demo inference with vLLM
+│   ├── switch_model.py          # Model switching utility
+│   ├── benchmark_logic.py       # Logic reasoning benchmarks
+│   ├── inspect_tokenizer.py     # Tokenizer inspection utility
+│   └── test_lora_finetune.py    # Test suite
+└── data/                        # Data directory (created at runtime)
 ```
 
 ## Installation
 
 1. Clone the repository:
 ```bash
-git clone <repository-url>
+git clone https://github.com/ryanlin10/LLM-Syllogistic-Formal-Verification.git
 cd SyLLM
 ```
 
@@ -67,17 +89,21 @@ pip install -r requirements.txt
 
 3. Configure the system:
    - Edit `config.yaml` to set model paths, data paths, and hyperparameters
-   - Ensure you have access to DeepSeek V3 model files
+   - Or use `.env` to set `MODEL_NAME` (takes priority over config.yaml)
 
 ## Quick Start
 
 ### 1. Generate Training Data
 
+Generate synthetic logic reasoning examples:
+```bash
+python scripts/generate_logic_data.py -n 1000 -o ./data/logic_train.jsonl
+```
+
+Or generate premise-conclusion pairs from documents:
 ```bash
 python scripts/generate_data.py
 ```
-
-This generates synthetic premise-conclusion pairs from documents.
 
 ### 2. Prepare Data Splits
 
@@ -90,10 +116,14 @@ This validates, balances, and splits data into train/val/test sets.
 ### 3. Fine-tune the Model
 
 ```bash
-python scripts/train_finetune.py
+python scripts/lora_finetune.py \
+  --model mistralai/Mistral-Small-3.2-24B-Instruct-2506 \
+  --train-path ./data/train.jsonl \
+  --output-dir ./outputs \
+  --use-wandb
 ```
 
-This fine-tunes DeepSeek V3 with LoRA to output structured JSON.
+The script supports automatic LoRA target module detection, mixed precision training (FP16/BF16), gradient checkpointing, and checkpoint resumption.
 
 ### 4. (Optional) RLHF Training
 
@@ -101,15 +131,15 @@ This fine-tunes DeepSeek V3 with LoRA to output structured JSON.
 python scripts/train_rlhf.py
 ```
 
-This further improves the model using RLHF with verifier rewards.
+Further improves the model using PPO with verifier-based rewards.
 
 ### 5. Run Inference
 
 ```bash
-python scripts/inference_demo.py
+python scripts/inference_demo.py "Given premises, what is the conclusion?"
 ```
 
-This demonstrates inference with verification.
+Uses vLLM for efficient inference with optional tensor parallelism.
 
 ### 6. Evaluate
 
@@ -121,15 +151,14 @@ python scripts/evaluate.py --model_outputs outputs.jsonl --ground_truth data/tes
 
 ### Model Switching
 
-Easily switch between models using a `.env` file:
+Switch between models using a `.env` file or the CLI utility:
 
 ```bash
 # Create .env file from template
 cp .env.example .env
 
-# Edit .env file and set MODEL_NAME
-# Or use the switch script:
-python scripts/switch_model.py deepseek-ai/deepseek-v3
+# Switch models
+python scripts/switch_model.py mistralai/Mistral-Small-3.2-24B-Instruct-2506
 
 # List available models
 python scripts/switch_model.py --list
@@ -138,13 +167,20 @@ python scripts/switch_model.py --list
 python scripts/switch_model.py --current
 ```
 
-The `.env` file takes priority over `config.yaml`. This allows you to switch models without modifying the config file.
+### Supported Models
+
+The model registry includes:
+- **Mistral**: `mistralai/Mistral-Small-3.2-24B-Instruct-2506` (currently configured)
+- **DeepSeek**: `deepseek-ai/deepseek-v3`, `deepseek-ai/deepseek-v2`
+- **Llama**: `meta-llama/Llama-2-7b-hf`
+
+Each model has automatic LoRA target module detection and configurable context lengths.
 
 ### Full Configuration
 
 Edit `config.yaml` to customize:
 
-- **Model**: Base model path (or set via MODEL_NAME in .env), LoRA settings
+- **Model**: Base model path (or set via `MODEL_NAME` in `.env`), LoRA settings
 - **Training**: Batch sizes, learning rates, epochs
 - **RLHF**: PPO parameters, reward scaling
 - **Verifier**: Confidence thresholds, model paths
@@ -179,15 +215,21 @@ Training data uses JSONL format:
 
 ## Verification System
 
-The verifier has two stages:
+The verifier uses a staged pipeline:
 
-1. **Premise Verifier**: Checks if each premise is supported by evidence
+1. **Premise Verifier (NLI)**: Checks if each premise is supported by evidence
    - Labels: `supported`, `contradicted`, `unverifiable`
-   - Uses NLI-style classifier (with rule-based fallback)
+   - Uses NLI-style classifier with rule-based fallback
 
-2. **Inference Verifier**: Checks if conclusion follows from premises
+2. **Inference Verifier (NLI)**: Checks if the conclusion follows from premises
    - Labels: `entailed`, `non-entailed`, `weakly_supported`
    - Uses multi-premise entailment model
+
+3. **Semantic Parsing**: Converts natural language to formal logic representations
+   - Supports propositional and first-order logic formulas
+
+4. **Symbolic Verification**: Formal verification using Z3 SMT solver and Datalog
+   - Provides provably correct entailment checking when symbolic translation succeeds
 
 Final verdict: `accept`, `review`, or `reject`
 
@@ -199,33 +241,6 @@ Final verdict: `accept`, `review`, or `reject`
 - **Verifier Calibration**: Expected Calibration Error (ECE)
 - **Parse Success Rate**: Percentage of valid JSON outputs
 
-## Advanced Usage
-
-### Custom Data Sources
-
-Add your domain documents to the data generation pipeline:
-
-```python
-from src.data.generator import SyntheticDataGenerator, GenerationConfig
-
-generator = SyntheticDataGenerator(GenerationConfig(num_examples=1000))
-annotations = generator.generate_batch(your_documents, your_questions)
-```
-
-### Building Retrieval Index
-
-```python
-from src.retrieval.retriever import DocumentRetriever, RetrievalConfig
-
-retriever = DocumentRetriever(RetrievalConfig())
-retriever.index_documents(your_documents)
-retriever.save_index()
-```
-
-### Custom Verifier Models
-
-Train verifier models on domain-specific NLI data, then update paths in `config.yaml`.
-
 ## Requirements
 
 - Python 3.8+
@@ -235,7 +250,7 @@ Train verifier models on domain-specific NLI data, then update paths in `config.
 
 ## License
 
-Ensure compliance with DeepSeek V3 model license for commercial use.
+MIT License. Ensure compliance with individual model licenses for commercial use.
 
 ## Contributing
 
@@ -251,8 +266,3 @@ Ensure compliance with DeepSeek V3 model license for commercial use.
 - [ ] Production deployment templates
 - [ ] Multi-domain adaptation
 - [ ] Enhanced verifier training data
-
-## Support
-
-For issues and questions, please open an issue on the repository.
-
