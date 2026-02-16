@@ -56,6 +56,14 @@ outputs/
 .env.local
 .env.*.local
 
+# Finetuned model outputs
+mistralai_*/
+meta-llama_*/
+google_*/
+Qwen_*/
+microsoft_*/
+deepseek-ai_*/
+
 # Temporary files
 *.tmp
 *.bak
