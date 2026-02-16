@@ -5,7 +5,8 @@ model:
   # Base model (used for training and as base for inference with LoRA)
   base_model: "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
   # LoRA adapter path for inference (optional - if not set, uses base_model only)
-  lora_adapter: "/Users/ryanlin/Desktop/SyLLM/mistralai_Mistral_Small_3.2_24B_Instruct_2506_20260120_021836/final"
+  # Use relative path for portability across machines
+  lora_adapter: "./mistralai_Mistral_Small_3.2_24B_Instruct_2506_20260120_021836/final"
 
 # Data Configuration
 data:

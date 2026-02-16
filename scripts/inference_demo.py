@@ -34,13 +34,17 @@ def main():
     )
     args = parser.parse_args()
 
-    config_path = Path(__file__).parent.parent / "config.yaml"
+    project_root = Path(__file__).parent.parent
+    config_path = project_root / "config.yaml"
     config = load_config(str(config_path))
 
     model_path = args.model or config["model"]["base_model"]
     lora_adapter_path = None
     if not args.no_lora:
         lora_adapter_path = args.lora or config["model"].get("lora_adapter")
+        # Resolve relative paths against project root
+        if lora_adapter_path and not Path(lora_adapter_path).is_absolute():
+            lora_adapter_path = str(project_root / lora_adapter_path)
 
     print(f"Loading model: {model_path}")
     if lora_adapter_path:
