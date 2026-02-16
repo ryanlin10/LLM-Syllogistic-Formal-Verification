@@ -23,7 +23,9 @@ def main():
     parser.add_argument(
         "--system-prompt", "-s", default=DEFAULT_SYSTEM_PROMPT, help="System prompt"
     )
-    parser.add_argument("--model", "-m", help="Model path (overrides config)")
+    parser.add_argument("--model", "-m", help="Base model path (overrides config)")
+    parser.add_argument("--lora", "-l", help="LoRA adapter path (overrides config)")
+    parser.add_argument("--no-lora", action="store_true", help="Disable LoRA adapter")
     parser.add_argument("--max-tokens", type=int, default=512, help="Max tokens")
     parser.add_argument("--temperature", type=float, default=0.7, help="Temperature")
     parser.add_argument("--top-p", type=float, default=0.9, help="Top-p")
@@ -35,12 +37,18 @@ def main():
     config_path = Path(__file__).parent.parent / "config.yaml"
     config = load_config(str(config_path))
 
-    model_path = args.model or config["model"].get("inference_model") or config["model"]["base_model"]
+    model_path = args.model or config["model"]["base_model"]
+    lora_adapter_path = None
+    if not args.no_lora:
+        lora_adapter_path = args.lora or config["model"].get("lora_adapter")
 
     print(f"Loading model: {model_path}")
+    if lora_adapter_path:
+        print(f"With LoRA adapter: {lora_adapter_path}")
 
     predictor = VLLMPredictor(
         model_path=model_path,
+        lora_adapter_path=lora_adapter_path,
         tensor_parallel_size=args.tensor_parallel,
     )
 

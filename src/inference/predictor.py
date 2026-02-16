@@ -3,6 +3,7 @@
 from typing import Optional, List
 from vllm import LLM
 from vllm.sampling_params import SamplingParams
+from vllm.lora.request import LoRARequest
 
 
 class VLLMPredictor:
@@ -11,6 +12,7 @@ class VLLMPredictor:
     def __init__(
         self,
         model_path: str,
+        lora_adapter_path: Optional[str] = None,
         tensor_parallel_size: int = 1,
         gpu_memory_utilization: float = 0.9,
         max_model_len: Optional[int] = None,
@@ -19,20 +21,30 @@ class VLLMPredictor:
         Initialize the vLLM predictor.
 
         Args:
-            model_path: HuggingFace model path or local path
+            model_path: HuggingFace model path or local path to base model
+            lora_adapter_path: Optional path to LoRA adapter
             tensor_parallel_size: Number of GPUs for tensor parallelism
             gpu_memory_utilization: Fraction of GPU memory to use
             max_model_len: Maximum sequence length (None for model default)
         """
         self.model_path = model_path
-        self.llm = LLM(
-            model=model_path,
-            tokenizer_mode="mistral",
-            tensor_parallel_size=tensor_parallel_size,
-            gpu_memory_utilization=gpu_memory_utilization,
-            max_model_len=max_model_len,
-            trust_remote_code=True,
-        )
+        self.lora_adapter_path = lora_adapter_path
+        self.lora_request = None
+
+        llm_kwargs = {
+            "model": model_path,
+            "tokenizer_mode": "mistral",
+            "tensor_parallel_size": tensor_parallel_size,
+            "gpu_memory_utilization": gpu_memory_utilization,
+            "max_model_len": max_model_len,
+            "trust_remote_code": True,
+        }
+
+        if lora_adapter_path:
+            llm_kwargs["enable_lora"] = True
+            self.lora_request = LoRARequest("finetuned", 1, lora_adapter_path)
+
+        self.llm = LLM(**llm_kwargs)
 
     def generate(
         self,
@@ -63,7 +75,11 @@ class VLLMPredictor:
             top_p=top_p,
         )
 
-        outputs = self.llm.chat(messages, sampling_params=sampling_params)
+        chat_kwargs = {"sampling_params": sampling_params}
+        if self.lora_request:
+            chat_kwargs["lora_request"] = self.lora_request
+
+        outputs = self.llm.chat(messages, **chat_kwargs)
         return outputs[0].outputs[0].text
 
     def generate_batch(
@@ -95,7 +111,11 @@ class VLLMPredictor:
             top_p=top_p,
         )
 
-        outputs = self.llm.chat(conversations, sampling_params=sampling_params)
+        chat_kwargs = {"sampling_params": sampling_params}
+        if self.lora_request:
+            chat_kwargs["lora_request"] = self.lora_request
+
+        outputs = self.llm.chat(conversations, **chat_kwargs)
         return [output.outputs[0].text for output in outputs]
 
     def _build_messages(
