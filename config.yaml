@@ -6,7 +6,7 @@ model:
   base_model: "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
   # LoRA adapter path for inference (optional - if not set, uses base_model only)
   # Use relative path for portability across machines
-  lora_adapter: "./mistralai_Mistral_Small_3.2_24B_Instruct_2506_20260120_021836/final"
+  lora_adapter: "./mistralai_Mistral_Small_3.2_24B_Instruct_2506_20260120_021836/final_fixed"
 
 # Data Configuration
 data:
