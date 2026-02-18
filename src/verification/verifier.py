@@ -1,325 +1,219 @@
-"""Automated premise and inference verification modules."""
+"""Z3-based symbolic verification pipeline.
 
-import torch
-from typing import List, Dict, Any, Optional, Tuple
+Main entry point for verifying logical inferences using Z3 SMT solving.
+Replaces the earlier NLI-based verifier with a symbolic approach that
+parses natural-language premises/conclusions into formal logic and checks
+entailment via Z3's satisfiability engine.
+"""
+
+from typing import Dict, Any, Optional, List, Union
 from dataclasses import dataclass
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
 
-from ..data.schema import Annotation, Premise
+try:
+    import z3
+except ImportError:
+    pass
+
+from .parser import SemiFormalParser, ParseResult
+from .translator import Z3Translator, TranslationContext, Z3_AVAILABLE
 
 
 @dataclass
 class VerifierConfig:
-    """Configuration for verifier models."""
-    premise_model_path: str = "./models/verifier/premise"
-    inference_model_path: str = "./models/verifier/inference"
+    """Configuration for the symbolic verification pipeline."""
+
+    timeout_ms: int = 5000
+    # Legacy fields -- accepted but ignored, for backward compat with YAML configs
+    premise_model_path: str = ""
+    inference_model_path: str = ""
     confidence_threshold: float = 0.85
     batch_size: int = 32
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
-
-
-class PremiseVerifier:
-    """Verifies if a premise is supported by evidence."""
-    
-    def __init__(self, config: VerifierConfig):
-        self.config = config
-        self.tokenizer = None
-        self.model = None
-        self._load_model()
-    
-    def _load_model(self):
-        """Load premise verification model."""
-        try:
-            self.tokenizer = AutoTokenizer.from_pretrained(self.config.premise_model_path)
-            self.model = AutoModelForSequenceClassification.from_pretrained(
-                self.config.premise_model_path,
-                num_labels=3  # supported, contradicted, unverifiable
-            )
-            self.model.to(self.config.device)
-            self.model.eval()
-        except Exception as e:
-            print(f"Warning: Could not load premise verifier from {self.config.premise_model_path}")
-            print(f"Error: {e}. Using lightweight rule-based fallback.")
-            self.model = None
-    
-    def verify(
-        self,
-        premise: str,
-        evidence_spans: Optional[List[Dict[str, Any]]] = None
-    ) -> Dict[str, Any]:
-        """Verify a single premise."""
-        # Rule-based fallback if model not loaded
-        if self.model is None:
-            return self._rule_based_verify(premise, evidence_spans)
-        
-        # Model-based verification
-        evidence_text = ""
-        if evidence_spans:
-            evidence_text = " ".join([span.get("text", "") for span in evidence_spans])
-        
-        # Format input
-        text = f"Premise: {premise}\nEvidence: {evidence_text}"
-        
-        inputs = self.tokenizer(
-            text,
-            return_tensors="pt",
-            truncation=True,
-            max_length=512,
-            padding=True
-        )
-        inputs = {k: v.to(self.config.device) for k, v in inputs.items()}
-        
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-            logits = outputs.logits
-            probs = torch.softmax(logits, dim=-1)[0].cpu().numpy()
-        
-        label_idx = np.argmax(probs)
-        confidence = float(probs[label_idx])
-        labels = ["supported", "contradicted", "unverifiable"]
-        label = labels[label_idx]
-        
-        return {
-            "label": label,
-            "confidence": confidence,
-            "probs": {l: float(p) for l, p in zip(labels, probs)},
-            "premise": premise,
-            "evidence_used": len(evidence_spans) if evidence_spans else 0
-        }
-    
-    def _rule_based_verify(
-        self,
-        premise: str,
-        evidence_spans: Optional[List[Dict[str, Any]]]
-    ) -> Dict[str, Any]:
-        """Lightweight rule-based verification fallback."""
-        if not evidence_spans:
-            return {
-                "label": "unverifiable",
-                "confidence": 0.5,
-                "probs": {"supported": 0.2, "contradicted": 0.1, "unverifiable": 0.7},
-                "premise": premise,
-                "evidence_used": 0
-            }
-        
-        # Simple keyword overlap check
-        premise_lower = premise.lower()
-        evidence_text = " ".join([span.get("text", "").lower() for span in evidence_spans])
-        
-        # Count word overlap
-        premise_words = set(premise_lower.split())
-        evidence_words = set(evidence_text.split())
-        overlap = len(premise_words & evidence_words) / max(len(premise_words), 1)
-        
-        if overlap > 0.3:
-            label = "supported"
-            confidence = min(0.7, overlap)
-        else:
-            label = "unverifiable"
-            confidence = 0.5
-        
-        return {
-            "label": label,
-            "confidence": confidence,
-            "probs": {
-                "supported": confidence if label == "supported" else 0.2,
-                "contradicted": 0.1,
-                "unverifiable": 1 - confidence if label == "supported" else confidence
-            },
-            "premise": premise,
-            "evidence_used": len(evidence_spans)
-        }
-
-
-class InferenceVerifier:
-    """Verifies if a conclusion follows from premises."""
-    
-    def __init__(self, config: VerifierConfig):
-        self.config = config
-        self.tokenizer = None
-        self.model = None
-        self._load_model()
-    
-    def _load_model(self):
-        """Load inference verification model."""
-        try:
-            self.tokenizer = AutoTokenizer.from_pretrained(self.config.inference_model_path)
-            self.model = AutoModelForSequenceClassification.from_pretrained(
-                self.config.inference_model_path,
-                num_labels=3  # entailed, non-entailed, weakly_supported
-            )
-            self.model.to(self.config.device)
-            self.model.eval()
-        except Exception as e:
-            print(f"Warning: Could not load inference verifier from {self.config.inference_model_path}")
-            print(f"Error: {e}. Using lightweight rule-based fallback.")
-            self.model = None
-    
-    def verify(
-        self,
-        premises: List[str],
-        conclusion: str
-    ) -> Dict[str, Any]:
-        """Verify if conclusion follows from premises."""
-        # Rule-based fallback
-        if self.model is None:
-            return self._rule_based_verify(premises, conclusion)
-        
-        # Format input
-        premises_text = " ".join([f"Premise {i+1}: {p}" for i, p in enumerate(premises)])
-        text = f"{premises_text}\nConclusion: {conclusion}"
-        
-        inputs = self.tokenizer(
-            text,
-            return_tensors="pt",
-            truncation=True,
-            max_length=1024,
-            padding=True
-        )
-        inputs = {k: v.to(self.config.device) for k, v in inputs.items()}
-        
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-            logits = outputs.logits
-            probs = torch.softmax(logits, dim=-1)[0].cpu().numpy()
-        
-        label_idx = np.argmax(probs)
-        confidence = float(probs[label_idx])
-        labels = ["entailed", "non-entailed", "weakly_supported"]
-        label = labels[label_idx]
-        
-        return {
-            "label": label,
-            "confidence": confidence,
-            "probs": {l: float(p) for l, p in zip(labels, probs)},
-            "premises_count": len(premises),
-            "conclusion": conclusion
-        }
-    
-    def _rule_based_verify(self, premises: List[str], conclusion: str) -> Dict[str, Any]:
-        """Lightweight rule-based verification fallback."""
-        if not premises:
-            return {
-                "label": "non-entailed",
-                "confidence": 0.6,
-                "probs": {"entailed": 0.1, "non-entailed": 0.7, "weakly_supported": 0.2},
-                "premises_count": 0,
-                "conclusion": conclusion
-            }
-        
-        # Simple keyword and semantic overlap
-        conclusion_lower = conclusion.lower()
-        premises_text = " ".join(premises).lower()
-        
-        # Word overlap
-        conclusion_words = set(conclusion_lower.split())
-        premises_words = set(premises_text.split())
-        overlap = len(conclusion_words & premises_words) / max(len(conclusion_words), 1)
-        
-        # Simple heuristics
-        if overlap > 0.4 and len(premises) >= 2:
-            label = "entailed"
-            confidence = min(0.7, overlap + 0.2)
-        elif overlap > 0.2:
-            label = "weakly_supported"
-            confidence = 0.5
-        else:
-            label = "non-entailed"
-            confidence = 0.6
-        
-        return {
-            "label": label,
-            "confidence": confidence,
-            "probs": {
-                "entailed": confidence if label == "entailed" else 0.2,
-                "non-entailed": confidence if label == "non-entailed" else 0.3,
-                "weakly_supported": confidence if label == "weakly_supported" else 0.2
-            },
-            "premises_count": len(premises),
-            "conclusion": conclusion
-        }
+    device: str = "cpu"
 
 
 class VerifierPipeline:
-    """End-to-end verification pipeline."""
-    
-    def __init__(self, config: VerifierConfig):
-        self.config = config
-        self.premise_verifier = PremiseVerifier(config)
-        self.inference_verifier = InferenceVerifier(config)
-    
+    """End-to-end symbolic verification pipeline.
+
+    Uses semi-formal parsing and Z3 SMT solving to determine whether a
+    conclusion is logically entailed by a set of premises.  Degrades
+    gracefully when Z3 is not installed.
+    """
+
+    def __init__(self, config: Optional[VerifierConfig] = None):
+        self.config = config or VerifierConfig()
+        self.parser = SemiFormalParser()
+        self.translator = Z3Translator() if Z3_AVAILABLE else None
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def verify(
+        self,
+        text: Optional[str] = None,
+        *,
+        premises: Optional[List[str]] = None,
+        conclusion: Optional[str] = None,
+        **kwargs,
+    ) -> Union[bool, Dict]:
+        """Verify a logical inference.
+
+        Supports two call signatures:
+
+        1. ``verify("free text with premises. Therefore, conclusion.")``
+           Returns a ``bool`` indicating whether the conclusion follows.
+
+        2. ``verify(premises=["p1", "p2"], conclusion="c")``
+           Returns a ``Dict`` with keys ``verdict`` and ``confidence``.
+        """
+        # Signature 1: free-text input -> bool
+        if text is not None and premises is None and conclusion is None:
+            if not Z3_AVAILABLE:
+                return False
+            try:
+                parsed: ParseResult = self.parser.parse_text(text)
+                return self._check_entailment(
+                    parsed.premises, parsed.conclusion
+                )
+            except Exception:
+                return False
+
+        # Signature 2: structured input -> dict
+        if premises is not None and conclusion is not None:
+            if not Z3_AVAILABLE:
+                return {"verdict": "review", "confidence": 0.0}
+            try:
+                parsed = self.parser.parse_inference(premises, conclusion)
+                result = self._check_entailment(
+                    parsed.premises, parsed.conclusion
+                )
+                if result:
+                    return {"verdict": "accept", "confidence": 1.0}
+                else:
+                    return {"verdict": "reject", "confidence": 1.0}
+            except Exception:
+                return {"verdict": "review", "confidence": 0.0}
+
+        # Fallback: bad call signature
+        return False
+
+    def verify_inference(
+        self, premises: List[str], conclusion: str
+    ) -> bool:
+        """Verify that *conclusion* follows from *premises*.
+
+        Structured input, returns ``bool``.
+        """
+        if not Z3_AVAILABLE:
+            return False
+        try:
+            parsed: ParseResult = self.parser.parse_inference(
+                premises, conclusion
+            )
+            return self._check_entailment(parsed.premises, parsed.conclusion)
+        except Exception:
+            return False
+
     def verify_output(
         self,
         parsed_output: Dict[str, Any],
-        evidence_spans: Optional[List[List[Dict[str, Any]]]] = None
-    ) -> Dict[str, Any]:
-        """Verify complete model output."""
-        premises = parsed_output.get("premises", [])
-        conclusion = parsed_output.get("conclusion", "")
-        
-        # Handle different premise formats
-        if isinstance(premises[0], dict) if premises else False:
-            premise_texts = [p.get("text", "") for p in premises]
-        else:
-            premise_texts = premises
-        
-        # Verify each premise
-        premise_results = []
-        for i, premise_text in enumerate(premise_texts):
-            evidence = evidence_spans[i] if evidence_spans and i < len(evidence_spans) else None
-            result = self.premise_verifier.verify(premise_text, evidence)
-            premise_results.append(result)
-        
-        # Check if any premise is contradicted
-        contradicted_premises = [
-            r for r in premise_results 
-            if r["label"] == "contradicted" and r["confidence"] > 0.7
-        ]
-        
-        if contradicted_premises:
+        evidence_spans: Optional[Any] = None,
+    ) -> Dict:
+        """Backward-compatible entry point used by rlhf.py and evaluator.py.
+
+        Accepts a dict with ``premises`` (list of strings or dicts) and
+        ``conclusion`` (string).  Returns a verdict dict.
+        """
+        try:
+            raw_premises = parsed_output.get("premises", [])
+            # Handle premises that may be dicts with a "text" key
+            if raw_premises and isinstance(raw_premises[0], dict):
+                premise_texts = [p.get("text", "") for p in raw_premises]
+            else:
+                premise_texts = list(raw_premises)
+
+            conclusion = parsed_output.get("conclusion", "")
+
+            if not premise_texts or not conclusion:
+                return {
+                    "verdict": "review",
+                    "confidence": 0.0,
+                    "reason": "symbolic_verification",
+                    "details": {
+                        "error": "empty premises or conclusion",
+                    },
+                }
+
+            result = self.verify_inference(premise_texts, conclusion)
+
             return {
-                "verdict": "reject",
-                "reason": "contradicted_premise",
+                "verdict": "accept" if result else "reject",
+                "confidence": 1.0,
+                "reason": "symbolic_verification",
                 "details": {
-                    "premises": premise_results,
-                    "inference": None
+                    "premises_count": len(premise_texts),
+                    "conclusion": conclusion,
+                    "z3_available": Z3_AVAILABLE,
                 },
-                "confidence": 1.0 - max(r["confidence"] for r in contradicted_premises)
             }
-        
-        # Check for unverifiable premises (below threshold)
-        unverifiable_premises = [
-            r for r in premise_results
-            if r["label"] == "unverifiable" and r["confidence"] < self.config.confidence_threshold
-        ]
-        
-        # Verify inference
-        inference_result = self.inference_verifier.verify(premise_texts, conclusion)
-        
-        # Determine final verdict
-        if inference_result["label"] == "entailed" and \
-           inference_result["confidence"] > self.config.confidence_threshold and \
-           len(unverifiable_premises) == 0:
-            verdict = "accept"
-        elif inference_result["label"] == "weakly_supported" and \
-             len(unverifiable_premises) == 0:
-            verdict = "review"
-        else:
-            verdict = "review" if len(contradicted_premises) == 0 else "reject"
-        
-        return {
-            "verdict": verdict,
-            "reason": "inference_check" if verdict != "reject" else "premise_or_inference_failure",
-            "details": {
-                "premises": premise_results,
-                "inference": inference_result
-            },
-            "confidence": min(
-                inference_result["confidence"],
-                min((r["confidence"] for r in premise_results), default=1.0)
-            )
-        }
+        except Exception:
+            return {
+                "verdict": "review",
+                "confidence": 0.0,
+                "reason": "symbolic_verification",
+                "details": {"error": "parse_failure"},
+            }
 
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
+    def _check_entailment(self, premises, conclusion) -> bool:
+        """Core Z3 entailment check.
+
+        Checks whether ``premises |= conclusion`` by asserting all
+        premises together with ``Not(conclusion)`` and testing for
+        unsatisfiability.
+
+        Parameters
+        ----------
+        premises : List[FormulaNode]
+            Parsed premise formula nodes.
+        conclusion : FormulaNode
+            Parsed conclusion formula node.
+
+        Returns
+        -------
+        bool
+            ``True`` if the inference is valid (the negated conclusion is
+            unsatisfiable given the premises), ``False`` otherwise.
+        """
+        if self.translator is None:
+            return False
+
+        try:
+            ctx = TranslationContext()
+
+            premise_exprs = [
+                self.translator.translate(p, ctx) for p in premises
+            ]
+            conclusion_expr = self.translator.translate(conclusion, ctx)
+
+            solver = z3.Solver()
+            solver.set("timeout", self.config.timeout_ms)
+
+            for expr in premise_exprs:
+                solver.add(expr)
+
+            solver.add(z3.Not(conclusion_expr))
+
+            check = solver.check()
+            if check == z3.unsat:
+                return True
+            elif check == z3.sat:
+                return False
+            else:
+                # z3.unknown
+                return False
+        except Exception:
+            return False

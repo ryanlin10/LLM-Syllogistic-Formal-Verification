@@ -53,6 +53,7 @@ class VLLMPredictor:
         max_tokens: int = 512,
         temperature: float = 0.7,
         top_p: float = 0.9,
+        use_lora: Optional[bool] = None,
     ) -> str:
         """
         Generate a response for a single message.
@@ -63,6 +64,8 @@ class VLLMPredictor:
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature
             top_p: Top-p sampling parameter
+            use_lora: Override LoRA usage. None=default behavior,
+                      True=force LoRA, False=force base model only.
 
         Returns:
             Raw generated text
@@ -76,8 +79,9 @@ class VLLMPredictor:
         )
 
         chat_kwargs = {"sampling_params": sampling_params}
-        if self.lora_request:
-            chat_kwargs["lora_request"] = self.lora_request
+        lora = self._resolve_lora(use_lora)
+        if lora:
+            chat_kwargs["lora_request"] = lora
 
         outputs = self.llm.chat(messages, **chat_kwargs)
         return outputs[0].outputs[0].text
@@ -89,6 +93,7 @@ class VLLMPredictor:
         max_tokens: int = 512,
         temperature: float = 0.7,
         top_p: float = 0.9,
+        use_lora: Optional[bool] = None,
     ) -> List[str]:
         """
         Generate responses for multiple messages.
@@ -99,6 +104,8 @@ class VLLMPredictor:
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature
             top_p: Top-p sampling parameter
+            use_lora: Override LoRA usage. None=default behavior,
+                      True=force LoRA, False=force base model only.
 
         Returns:
             List of raw generated texts
@@ -112,11 +119,28 @@ class VLLMPredictor:
         )
 
         chat_kwargs = {"sampling_params": sampling_params}
-        if self.lora_request:
-            chat_kwargs["lora_request"] = self.lora_request
+        lora = self._resolve_lora(use_lora)
+        if lora:
+            chat_kwargs["lora_request"] = lora
 
         outputs = self.llm.chat(conversations, **chat_kwargs)
         return [output.outputs[0].text for output in outputs]
+
+    def _resolve_lora(self, use_lora: Optional[bool] = None) -> Optional[LoRARequest]:
+        """Resolve whether to use LoRA for this request.
+
+        Args:
+            use_lora: None=default (use if configured), True=force LoRA,
+                      False=force base model only.
+
+        Returns:
+            LoRARequest if LoRA should be used, None otherwise.
+        """
+        if use_lora is None:
+            return self.lora_request
+        if use_lora:
+            return self.lora_request
+        return None
 
     def _build_messages(
         self, message: str, system_prompt: Optional[str] = None

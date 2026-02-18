@@ -1,7 +1,5 @@
-"""Automated verification system for premises and conclusions."""
+"""Z3-based symbolic verification for logical inferences."""
 
-from .verifier import PremiseVerifier, InferenceVerifier, VerifierPipeline, VerifierConfig
+from .verifier import VerifierPipeline, VerifierConfig
 
-__all__ = ["PremiseVerifier", "InferenceVerifier", "VerifierPipeline", "VerifierConfig"]
-
-
+__all__ = ["VerifierPipeline", "VerifierConfig"]
