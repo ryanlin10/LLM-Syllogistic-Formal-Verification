@@ -37,12 +37,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.evaluation.benchmark_registry import (
     BENCHMARK_REGISTRY,
     BenchmarkCategory,
+    BenchmarkTier,
+    get_benchmarks_by_tier,
     list_benchmarks,
 )
 
 # All categories that --standard-only should include
 _STANDARD_CATEGORIES = {BenchmarkCategory.STANDARD}
-from src.evaluation.benchmark_evaluator import BenchmarkEvaluator
+from src.evaluation.benchmark_evaluator import (
+    BenchmarkEvaluator,
+    StagedEvalConfig,
+    CheckpointManager,
+)
 from src.evaluation.report_generator import ReportGenerator
 
 
@@ -83,6 +89,12 @@ Examples:
         "--benchmarks", "-b", nargs="+", help="Specific benchmarks to run"
     )
     bench_group.add_argument(
+        "--tier",
+        choices=["critical", "extended", "all"],
+        default="critical",
+        help="Benchmark tier: critical (4 core), extended (+7 more), all (default: critical)",
+    )
+    bench_group.add_argument(
         "--list", action="store_true", help="List available benchmarks and exit"
     )
     bench_group.add_argument(
@@ -112,6 +124,12 @@ Examples:
     eval_group.add_argument(
         "--batch-size", type=int, default=32, help="Inference batch size"
     )
+    eval_group.add_argument(
+        "--no-staged", action="store_true", help="Disable staged (probe + full) evaluation"
+    )
+    eval_group.add_argument(
+        "--probe-size", type=int, default=50, help="Number of items in the probe stage (default: 50)"
+    )
 
     # Output
     out_group = parser.add_argument_group("Output")
@@ -125,6 +143,15 @@ Examples:
     out_group.add_argument(
         "--json-output", type=str, help="Also save JSON results to this path"
     )
+    out_group.add_argument(
+        "--resume", action="store_true", help="Resume from last checkpoint"
+    )
+    out_group.add_argument(
+        "--checkpoint-dir",
+        type=str,
+        default="outputs/checkpoints",
+        help="Directory for run checkpoints (default: outputs/checkpoints/)",
+    )
 
     return parser.parse_args()
 
@@ -136,12 +163,16 @@ def main():
     if args.list:
         print("\nAvailable benchmarks:")
         print("-" * 72)
-        # Group by category
-        by_cat: dict = {}
+        # Group by tier, then category
+        by_tier: dict = {}
         for key, cfg in BENCHMARK_REGISTRY.items():
-            by_cat.setdefault(cfg.category.value, []).append((key, cfg))
-        for cat_name, entries in by_cat.items():
-            print(f"\n  [{cat_name.upper()}]")
+            by_tier.setdefault(cfg.tier.value, []).append((key, cfg))
+        tier_order = ["critical", "extended", "specialized"]
+        for tier_name in tier_order:
+            entries = by_tier.get(tier_name, [])
+            if not entries:
+                continue
+            print(f"\n  [{tier_name.upper()}]")
             for key, cfg in entries:
                 btype = cfg.benchmark_type.value
                 token_info = (
@@ -149,11 +180,15 @@ def main():
                     if cfg.max_tokens_override
                     else ""
                 )
-                print(f"    {key:<18} {cfg.name} — {cfg.description}")
+                print(
+                    f"    {key:<18} {cfg.name} — {cfg.description} "
+                    f"[{cfg.category.value}]"
+                )
                 print(
                     f"    {'':18} type={btype}, {cfg.num_few_shot}-shot"
                     f", baseline={cfg.random_baseline:.2f}{token_info}"
                 )
+        print(f"\nUse --tier critical|extended|all to select benchmark sets.")
         print()
         return
 
@@ -206,17 +241,21 @@ def main():
             if v.category == BenchmarkCategory.CODE
         ]
     else:
-        benchmarks = list(BENCHMARK_REGISTRY.keys())
+        benchmarks = get_benchmarks_by_tier(args.tier)
 
     print(f"\n{'=' * 60}")
     print("BENCHMARK EVALUATION PIPELINE")
     print(f"{'=' * 60}")
     print(f"Base model:    {model_path}")
     print(f"LoRA adapter:  {lora_path}")
+    print(f"Tier:          {args.tier}")
     print(f"Benchmarks:    {', '.join(benchmarks)}")
     print(f"Max samples:   {args.max_samples or 'full'}")
+    print(f"Staged eval:   {'disabled' if args.no_staged else f'enabled (probe={args.probe_size})'}")
     print(f"Temperature:   {args.temperature}")
     print(f"Batch size:    {args.batch_size}")
+    if args.resume:
+        print(f"Checkpointing: enabled ({args.checkpoint_dir})")
     print(f"{'=' * 60}")
 
     # Initialize predictor
@@ -232,6 +271,18 @@ def main():
     )
     print("Model loaded.\n")
 
+    # Configure staged evaluation
+    staged_config = StagedEvalConfig(
+        enabled=not args.no_staged,
+        probe_size=args.probe_size,
+    )
+
+    # Configure checkpointing
+    checkpoint_manager = None
+    if args.resume:
+        checkpoint_manager = CheckpointManager(checkpoint_dir=args.checkpoint_dir)
+        checkpoint_manager.init_run(model_path, benchmarks, args.max_samples)
+
     # Run evaluation
     evaluator = BenchmarkEvaluator(
         predictor=predictor,
@@ -241,6 +292,8 @@ def main():
         temperature=args.temperature,
         max_tokens=args.max_tokens,
         batch_size=args.batch_size,
+        staged_config=staged_config,
+        checkpoint_manager=checkpoint_manager,
     )
 
     comparisons = evaluator.evaluate_all()

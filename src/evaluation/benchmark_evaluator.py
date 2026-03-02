@@ -3,12 +3,18 @@
 import os
 import sys
 import time
+import json
+import hashlib
 import tempfile
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, Future
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from collections import defaultdict
+from pathlib import Path
+
+from tqdm import tqdm
 
 from .benchmark_registry import (
     BenchmarkConfig,
@@ -29,6 +35,21 @@ from .answer_parser import (
     normalize_answer,
 )
 from .statistics import bootstrap_confidence_interval, compute_normalized_score
+
+
+# =============================================================================
+# Staged evaluation config
+# =============================================================================
+
+
+@dataclass
+class StagedEvalConfig:
+    """Configuration for two-stage (probe + full) evaluation."""
+
+    enabled: bool = True
+    probe_size: int = 50
+    ci_width_threshold: float = 0.10
+    high_accuracy_threshold: float = 0.85
 
 
 # =============================================================================
@@ -315,6 +336,145 @@ def _execute_mbpp(
 
 
 # =============================================================================
+# Checkpointing
+# =============================================================================
+
+
+class CheckpointManager:
+    """Saves and restores completed benchmark results across interrupted runs.
+
+    Uses a deterministic run_id derived from (model_path, benchmarks, max_samples)
+    so resuming automatically finds the right checkpoint.
+    """
+
+    def __init__(self, checkpoint_dir: str = "outputs/checkpoints"):
+        self.checkpoint_dir = Path(checkpoint_dir)
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self._run_id: Optional[str] = None
+        self._data: Dict[str, Any] = {"completed": {}}
+
+    def init_run(self, model_path: str, benchmarks: List[str], max_samples: Optional[int]):
+        """Compute run_id and optionally load existing checkpoint."""
+        key = f"{model_path}|{'|'.join(sorted(benchmarks))}|{max_samples}"
+        self._run_id = hashlib.sha256(key.encode()).hexdigest()[:16]
+
+    def load(self) -> Dict[str, Any]:
+        """Load checkpoint data if it exists. Returns dict of completed benchmarks."""
+        path = self._checkpoint_path()
+        if path.exists():
+            try:
+                self._data = json.loads(path.read_text())
+            except (json.JSONDecodeError, OSError):
+                self._data = {"completed": {}}
+        return self._data.get("completed", {})
+
+    def save_benchmark(self, benchmark_key: str, comparison: dict):
+        """Save a completed benchmark result (atomic write)."""
+        self._data.setdefault("completed", {})[benchmark_key] = comparison
+        tmp_path = self._checkpoint_path().with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(self._data, indent=2))
+        tmp_path.rename(self._checkpoint_path())
+
+    def clear(self):
+        """Remove checkpoint file after successful full completion."""
+        path = self._checkpoint_path()
+        if path.exists():
+            path.unlink()
+
+    def _checkpoint_path(self) -> Path:
+        return self.checkpoint_dir / f"run_{self._run_id}.json"
+
+
+def _serialize_comparison(comp: 'ComparisonResult') -> dict:
+    """Compact serialization of a ComparisonResult for checkpointing."""
+    def _serialize_result(r: 'BenchmarkResult') -> dict:
+        return {
+            "benchmark_key": r.benchmark_key,
+            "model_label": r.model_label,
+            "accuracy": r.accuracy,
+            "accuracy_ci_lower": r.accuracy_ci_lower,
+            "accuracy_ci_upper": r.accuracy_ci_upper,
+            "normalized_score": r.normalized_score,
+            "num_total": r.num_total,
+            "num_correct": r.num_correct,
+            "num_parse_failures": r.num_parse_failures,
+            "total_time_seconds": r.total_time_seconds,
+            "items": [
+                {"item_id": sr.item_id, "correct": sr.correct, "predicted": sr.predicted_answer}
+                for sr in r.individual_results
+            ],
+        }
+    return {
+        "benchmark_key": comp.benchmark_key,
+        "benchmark_name": comp.benchmark_name,
+        "category": comp.category,
+        "accuracy_delta": comp.accuracy_delta,
+        "is_improvement": comp.is_improvement,
+        "base_result": _serialize_result(comp.base_result),
+        "finetuned_result": _serialize_result(comp.finetuned_result),
+    }
+
+
+# =============================================================================
+# Data prefetching
+# =============================================================================
+
+
+class DataPrefetcher:
+    """Pre-loads the next benchmark's data while GPU inference runs.
+
+    Uses a single background thread to overlap I/O-bound HF dataset loading
+    with GPU-bound inference at no additional compute cost.
+    """
+
+    def __init__(self):
+        self._executor = ThreadPoolExecutor(max_workers=1)
+        self._future: Optional[Future] = None
+        self._key: Optional[str] = None
+
+    def prefetch(
+        self,
+        benchmark_key: str,
+        max_samples: Optional[int],
+        num_few_shot: Optional[int],
+    ):
+        """Start loading data for the given benchmark in the background."""
+        self._key = benchmark_key
+        self._future = self._executor.submit(
+            self._load, benchmark_key, max_samples, num_few_shot
+        )
+
+    def get(self) -> Optional[Tuple[List[Any], List[Any]]]:
+        """Block until prefetch completes and return (items, few_shot)."""
+        if self._future is None:
+            return None
+        try:
+            result = self._future.result()
+            return result
+        except Exception:
+            return None
+        finally:
+            self._future = None
+            self._key = None
+
+    def shutdown(self):
+        self._executor.shutdown(wait=False)
+
+    @staticmethod
+    def _load(
+        benchmark_key: str,
+        max_samples: Optional[int],
+        num_few_shot: Optional[int],
+    ) -> Tuple[List[Any], List[Any]]:
+        config = get_benchmark_config(benchmark_key)
+        loader = get_loader(benchmark_key)
+        items = loader.load(config, max_samples=max_samples)
+        n_shot = num_few_shot if num_few_shot is not None else config.num_few_shot
+        few_shot = loader.get_few_shot_examples(config, n=n_shot)
+        return items, few_shot
+
+
+# =============================================================================
 # Core evaluator
 # =============================================================================
 
@@ -335,6 +495,8 @@ class BenchmarkEvaluator:
         temperature: float = 0.0,
         max_tokens: int = 256,
         batch_size: int = 32,
+        staged_config: Optional[StagedEvalConfig] = None,
+        checkpoint_manager: Optional[CheckpointManager] = None,
     ):
         """
         Args:
@@ -345,6 +507,8 @@ class BenchmarkEvaluator:
             temperature: Sampling temperature (0.0=greedy for benchmarks).
             max_tokens: Maximum tokens to generate per item.
             batch_size: Batch size for inference.
+            staged_config: Configuration for staged evaluation.
+            checkpoint_manager: For saving/resuming interrupted runs.
         """
         self.predictor = predictor
         self.benchmarks = benchmarks or list(BENCHMARK_REGISTRY.keys())
@@ -353,39 +517,76 @@ class BenchmarkEvaluator:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.batch_size = batch_size
+        self.staged_config = staged_config or StagedEvalConfig()
+        self.checkpoint_manager = checkpoint_manager
 
     def evaluate_single_benchmark(
         self,
         benchmark_key: str,
         use_lora: bool,
         model_label: str,
+        items: Optional[List[BenchmarkItem]] = None,
+        few_shot: Optional[List[BenchmarkItem]] = None,
     ) -> BenchmarkResult:
-        """Run evaluation on a single benchmark with a specific model config."""
-        config = get_benchmark_config(benchmark_key)
-        loader = get_loader(benchmark_key)
+        """Run evaluation on a single benchmark with a specific model config.
 
-        # Load data
-        items = loader.load(config, max_samples=self.max_samples)
+        Args:
+            benchmark_key: Benchmark registry key.
+            use_lora: Whether to use the LoRA adapter.
+            model_label: Label for this model configuration.
+            items: Pre-loaded benchmark items (skips loader.load() if provided).
+            few_shot: Pre-loaded few-shot examples (skips loader.get_few_shot_examples() if provided).
+        """
+        config = get_benchmark_config(benchmark_key)
+
+        # Use pre-loaded data or load fresh
+        if items is None:
+            loader = get_loader(benchmark_key)
+            items = loader.load(config, max_samples=self.max_samples)
         if not items:
             print(f"  Warning: No items loaded for {benchmark_key}")
             return self._empty_result(benchmark_key, config, model_label)
 
-        # Load few-shot examples
-        n_shot = (
-            self.num_few_shot if self.num_few_shot is not None else config.num_few_shot
-        )
-        few_shot = loader.get_few_shot_examples(config, n=n_shot)
+        if few_shot is None:
+            loader = get_loader(benchmark_key)
+            n_shot = (
+                self.num_few_shot if self.num_few_shot is not None else config.num_few_shot
+            )
+            few_shot = loader.get_few_shot_examples(config, n=n_shot)
 
-        # Format prompts
+        total_start = time.time()
+        results = self._run_inference_batch(
+            items, few_shot, config, use_lora, model_label
+        )
+        total_time = time.time() - total_start
+        return self._aggregate_results(
+            benchmark_key, config, model_label, results, total_time
+        )
+
+    def _run_inference_batch(
+        self,
+        items: List[BenchmarkItem],
+        few_shot: List[BenchmarkItem],
+        config: BenchmarkConfig,
+        use_lora: bool,
+        stage_label: str,
+        progress_bar=None,
+    ) -> List[SingleResult]:
+        """Run inference on items and return individual results.
+
+        Args:
+            items: Benchmark items to evaluate.
+            few_shot: Few-shot demonstration examples.
+            config: Benchmark configuration.
+            use_lora: Whether to use LoRA adapter.
+            stage_label: Label for logging.
+            progress_bar: Optional tqdm progress bar for updates.
+        """
         prompts = [format_prompt(item, few_shot, config) for item in items]
         system_prompt = get_system_prompt(config)
-
-        # Use per-benchmark token override if set, else fall back to evaluator default
         effective_max_tokens = config.max_tokens_override or self.max_tokens
 
-        # Run inference in batches
         results: List[SingleResult] = []
-        total_start = time.time()
 
         for batch_start in range(0, len(prompts), self.batch_size):
             batch_end = min(batch_start + self.batch_size, len(prompts))
@@ -408,9 +609,7 @@ class BenchmarkEvaluator:
                 predicted, confidence, correct = self._evaluate_item(
                     output, item, config
                 )
-
                 predicted_text = self._predicted_text(predicted, item, config)
-
                 results.append(
                     SingleResult(
                         item_id=item.id,
@@ -426,61 +625,250 @@ class BenchmarkEvaluator:
                     )
                 )
 
-            print(
-                f"    Batch {batch_start // self.batch_size + 1}/"
-                f"{(len(prompts) + self.batch_size - 1) // self.batch_size} "
-                f"complete"
+            if progress_bar is not None:
+                progress_bar.update(len(batch_items))
+                acc = sum(r.correct for r in results) / len(results)
+                progress_bar.set_postfix(
+                    acc=f"{acc:.1%}",
+                    throughput=f"{len(results) / (time.time() - progress_bar.start_t + 0.001):.1f}/s",
+                )
+            else:
+                print(
+                    f"    Batch {batch_start // self.batch_size + 1}/"
+                    f"{(len(prompts) + self.batch_size - 1) // self.batch_size} "
+                    f"complete"
+                )
+
+        return results
+
+    def evaluate_all(self) -> List[ComparisonResult]:
+        """Run all benchmarks for both base and finetuned, return comparisons.
+
+        Features:
+        - Loads data once per benchmark, reuses for base + finetuned
+        - tqdm progress bars (outer: benchmarks, inner: items)
+        - Staged evaluation with early stopping when conclusive
+        - Checkpointing for resume after interruption
+        - Data prefetching to overlap I/O with GPU inference
+        """
+        comparisons = []
+
+        # Load checkpoint if resuming
+        completed_keys: Dict[str, Any] = {}
+        if self.checkpoint_manager:
+            completed_keys = self.checkpoint_manager.load()
+
+        # Data prefetcher
+        prefetcher = DataPrefetcher()
+
+        # Prefetch first benchmark's data
+        pending = [k for k in self.benchmarks if k not in completed_keys]
+        if pending:
+            prefetcher.prefetch(pending[0], self.max_samples, self.num_few_shot)
+
+        # Outer progress bar
+        outer_bar = tqdm(
+            total=len(self.benchmarks),
+            desc="Benchmarks",
+            unit="bench",
+            position=0,
+        )
+        # Count already-completed benchmarks
+        skipped = len(self.benchmarks) - len(pending)
+        if skipped > 0:
+            outer_bar.update(skipped)
+            outer_bar.set_postfix(status="resumed")
+
+        for i, benchmark_key in enumerate(self.benchmarks):
+            config = get_benchmark_config(benchmark_key)
+
+            # Skip checkpointed benchmarks
+            if benchmark_key in completed_keys:
+                continue
+
+            outer_bar.set_description(f"Benchmarks [{benchmark_key}]")
+
+            # Get prefetched data or load fresh
+            pending_idx = pending.index(benchmark_key)
+            if pending_idx == 0 or (prefetcher._key == benchmark_key and prefetcher._future is not None):
+                prefetch_result = prefetcher.get()
+                if prefetch_result:
+                    items, few_shot = prefetch_result
+                else:
+                    items, few_shot = self._load_benchmark_data(benchmark_key)
+            else:
+                items, few_shot = self._load_benchmark_data(benchmark_key)
+
+            # Prefetch NEXT benchmark's data while we run inference
+            if pending_idx + 1 < len(pending):
+                next_key = pending[pending_idx + 1]
+                prefetcher.prefetch(next_key, self.max_samples, self.num_few_shot)
+
+            # Run finetuned then base with staged evaluation
+            finetuned_result = self._evaluate_with_staging(
+                benchmark_key, config, items, few_shot,
+                use_lora=True, model_label="finetuned",
+            )
+            base_result = self._evaluate_with_staging(
+                benchmark_key, config, items, few_shot,
+                use_lora=False, model_label="base",
             )
 
+            delta = finetuned_result.accuracy - base_result.accuracy
+            comparison = ComparisonResult(
+                benchmark_key=benchmark_key,
+                benchmark_name=config.name,
+                category=config.category.value,
+                base_result=base_result,
+                finetuned_result=finetuned_result,
+                accuracy_delta=delta,
+                is_improvement=(delta > 0),
+            )
+            comparisons.append(comparison)
+
+            # Checkpoint after each benchmark
+            if self.checkpoint_manager:
+                self.checkpoint_manager.save_benchmark(
+                    benchmark_key, _serialize_comparison(comparison)
+                )
+
+            outer_bar.update(1)
+            outer_bar.set_postfix(last_delta=f"{delta:+.1%}")
+
+        outer_bar.close()
+        prefetcher.shutdown()
+
+        # Clear checkpoint on successful completion
+        if self.checkpoint_manager:
+            self.checkpoint_manager.clear()
+
+        return comparisons
+
+    def _load_benchmark_data(
+        self, benchmark_key: str
+    ) -> Tuple[List[BenchmarkItem], List[BenchmarkItem]]:
+        """Load items and few-shot examples for a benchmark."""
+        config = get_benchmark_config(benchmark_key)
+        loader = get_loader(benchmark_key)
+        items = loader.load(config, max_samples=self.max_samples)
+        n_shot = (
+            self.num_few_shot if self.num_few_shot is not None else config.num_few_shot
+        )
+        few_shot = loader.get_few_shot_examples(config, n=n_shot)
+        return items, few_shot
+
+    def _evaluate_with_staging(
+        self,
+        benchmark_key: str,
+        config: BenchmarkConfig,
+        items: List[BenchmarkItem],
+        few_shot: List[BenchmarkItem],
+        use_lora: bool,
+        model_label: str,
+    ) -> BenchmarkResult:
+        """Run staged evaluation: probe first, then full if not conclusive."""
+        sc = self.staged_config
+        if not sc.enabled or len(items) <= sc.probe_size:
+            # No staging — run everything
+            return self._run_and_aggregate(
+                benchmark_key, config, items, few_shot, use_lora, model_label,
+                stage_label=model_label,
+            )
+
+        # Stage 1: Probe
+        probe_items = items[: sc.probe_size]
+        probe_results = self._run_with_progress(
+            probe_items, few_shot, config, use_lora,
+            stage_label=f"[Probe] {model_label}",
+        )
+
+        probe_correct = [r.correct for r in probe_results]
+        probe_acc = sum(probe_correct) / len(probe_correct) if probe_correct else 0.0
+
+        if self._is_conclusive(probe_correct, probe_acc, config.random_baseline):
+            # Early stop — probe is enough
+            total_time = sum(r.latency_seconds for r in probe_results)
+            return self._aggregate_results(
+                benchmark_key, config, model_label, probe_results, total_time
+            )
+
+        # Stage 2: Full — run remaining items and merge with probe
+        remaining_items = items[sc.probe_size :]
+        remaining_results = self._run_with_progress(
+            remaining_items, few_shot, config, use_lora,
+            stage_label=f"[Full] {model_label}",
+        )
+
+        all_results = probe_results + remaining_results
+        total_time = sum(r.latency_seconds for r in all_results)
+        return self._aggregate_results(
+            benchmark_key, config, model_label, all_results, total_time
+        )
+
+    def _run_and_aggregate(
+        self,
+        benchmark_key: str,
+        config: BenchmarkConfig,
+        items: List[BenchmarkItem],
+        few_shot: List[BenchmarkItem],
+        use_lora: bool,
+        model_label: str,
+        stage_label: str,
+    ) -> BenchmarkResult:
+        """Run inference with progress bar and aggregate results."""
+        if not items:
+            return self._empty_result(benchmark_key, config, model_label)
+        total_start = time.time()
+        results = self._run_with_progress(
+            items, few_shot, config, use_lora, stage_label
+        )
         total_time = time.time() - total_start
         return self._aggregate_results(
             benchmark_key, config, model_label, results, total_time
         )
 
-    def evaluate_all(self) -> List[ComparisonResult]:
-        """Run all benchmarks for both base and finetuned, return comparisons."""
-        comparisons = []
+    def _run_with_progress(
+        self,
+        items: List[BenchmarkItem],
+        few_shot: List[BenchmarkItem],
+        config: BenchmarkConfig,
+        use_lora: bool,
+        stage_label: str,
+    ) -> List[SingleResult]:
+        """Run inference with a tqdm inner progress bar."""
+        inner_bar = tqdm(
+            total=len(items),
+            desc=f"  {stage_label}",
+            unit="item",
+            position=1,
+            leave=False,
+        )
+        results = self._run_inference_batch(
+            items, few_shot, config, use_lora, stage_label,
+            progress_bar=inner_bar,
+        )
+        inner_bar.close()
+        return results
 
-        for benchmark_key in self.benchmarks:
-            config = get_benchmark_config(benchmark_key)
-            print(f"\n{'=' * 60}")
-            print(f"Evaluating: {config.name} ({benchmark_key})")
-            print(f"{'=' * 60}")
+    @staticmethod
+    def _is_conclusive(
+        correctness: List[bool],
+        accuracy: float,
+        random_baseline: float,
+    ) -> bool:
+        """Check if probe results are conclusive enough to skip full evaluation.
 
-            # Finetuned (with LoRA)
-            print(f"  Running finetuned model...")
-            finetuned_result = self.evaluate_single_benchmark(
-                benchmark_key, use_lora=True, model_label="finetuned"
-            )
-            print(
-                f"  Finetuned accuracy: {finetuned_result.accuracy:.2%} "
-                f"({finetuned_result.num_correct}/{finetuned_result.num_total})"
-            )
-
-            # Base (without LoRA)
-            print(f"  Running base model...")
-            base_result = self.evaluate_single_benchmark(
-                benchmark_key, use_lora=False, model_label="base"
-            )
-            print(
-                f"  Base accuracy: {base_result.accuracy:.2%} "
-                f"({base_result.num_correct}/{base_result.num_total})"
-            )
-
-            delta = finetuned_result.accuracy - base_result.accuracy
-            comparisons.append(
-                ComparisonResult(
-                    benchmark_key=benchmark_key,
-                    benchmark_name=config.name,
-                    category=config.category.value,
-                    base_result=base_result,
-                    finetuned_result=finetuned_result,
-                    accuracy_delta=delta,
-                    is_improvement=(delta > 0),
-                )
-            )
-
-        return comparisons
+        Conclusive if 95% bootstrap CI width < 0.10 AND accuracy is clearly
+        high (>0.85) or near baseline (<baseline + 0.05).
+        """
+        if len(correctness) < 10:
+            return False
+        ci_lower, ci_upper = bootstrap_confidence_interval(correctness)
+        ci_width = ci_upper - ci_lower
+        if ci_width >= 0.10:
+            return False
+        # Clearly high accuracy or near baseline
+        return accuracy > 0.85 or accuracy < (random_baseline + 0.05)
 
     def _evaluate_item(
         self, output: str, item: BenchmarkItem, config: BenchmarkConfig

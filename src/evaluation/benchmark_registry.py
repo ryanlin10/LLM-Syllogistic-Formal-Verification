@@ -153,6 +153,7 @@ BENCHMARK_REGISTRY: Dict[str, BenchmarkConfig] = {
         num_choices=2,
         description="Boolean Reading Comprehension (yes/no over passages)",
         random_baseline=0.5,
+        tier=BenchmarkTier.CRITICAL,
     ),
     "piqa": BenchmarkConfig(
         name="PIQA",
@@ -166,6 +167,7 @@ BENCHMARK_REGISTRY: Dict[str, BenchmarkConfig] = {
         num_choices=2,
         description="Physical Intuition Question Answering",
         random_baseline=0.5,
+        tier=BenchmarkTier.EXTENDED,
     ),
     "arc_easy": BenchmarkConfig(
         name="ARC-Easy",
@@ -180,6 +182,7 @@ BENCHMARK_REGISTRY: Dict[str, BenchmarkConfig] = {
         num_choices=4,
         description="AI2 Reasoning Challenge (Easy set)",
         random_baseline=0.25,
+        tier=BenchmarkTier.EXTENDED,
     ),
     "triviaqa": BenchmarkConfig(
         name="TriviaQA",
@@ -195,6 +198,7 @@ BENCHMARK_REGISTRY: Dict[str, BenchmarkConfig] = {
         description="Open-domain Factual QA (trivia knowledge)",
         random_baseline=0.0,
         metrics=["accuracy"],
+        tier=BenchmarkTier.SPECIALIZED,
     ),
     "math": BenchmarkConfig(
         name="MATH",
@@ -210,6 +214,7 @@ BENCHMARK_REGISTRY: Dict[str, BenchmarkConfig] = {
         description="Competition Mathematics (Algebra through Calculus)",
         random_baseline=0.0,
         max_tokens_override=512,
+        tier=BenchmarkTier.SPECIALIZED,
     ),
     # -------------------------------------------------------------------------
     # Code benchmarks
@@ -228,6 +233,7 @@ BENCHMARK_REGISTRY: Dict[str, BenchmarkConfig] = {
         random_baseline=0.0,
         metrics=["pass@1"],
         max_tokens_override=512,
+        tier=BenchmarkTier.SPECIALIZED,
     ),
     "mbpp": BenchmarkConfig(
         name="MBPP",
@@ -244,6 +250,7 @@ BENCHMARK_REGISTRY: Dict[str, BenchmarkConfig] = {
         random_baseline=0.0,
         metrics=["pass@1"],
         max_tokens_override=512,
+        tier=BenchmarkTier.SPECIALIZED,
     ),
     # -------------------------------------------------------------------------
     # Logic benchmarks
@@ -260,6 +267,7 @@ BENCHMARK_REGISTRY: Dict[str, BenchmarkConfig] = {
         num_choices=4,
         description="Logic Question Answering",
         random_baseline=0.25,
+        tier=BenchmarkTier.CRITICAL,
     ),
     "folio": BenchmarkConfig(
         name="FOLIO",
@@ -273,6 +281,7 @@ BENCHMARK_REGISTRY: Dict[str, BenchmarkConfig] = {
         num_choices=3,
         description="First-Order Logic Reasoning",
         random_baseline=1.0 / 3.0,
+        tier=BenchmarkTier.CRITICAL,
     ),
 }
 
@@ -283,6 +292,29 @@ def get_benchmark_config(name: str) -> BenchmarkConfig:
         available = ", ".join(BENCHMARK_REGISTRY.keys())
         raise ValueError(f"Unknown benchmark: {name}. Available: {available}")
     return BENCHMARK_REGISTRY[name]
+
+
+def get_benchmarks_by_tier(tier: str) -> List[str]:
+    """Get benchmark keys for a given tier level.
+
+    Args:
+        tier: One of "critical", "extended", or "all".
+            - "critical": Only CRITICAL tier benchmarks.
+            - "extended": CRITICAL + EXTENDED tier benchmarks.
+            - "all": All benchmarks including SPECIALIZED.
+
+    Returns:
+        List of benchmark keys.
+    """
+    if tier == "critical":
+        tiers = {BenchmarkTier.CRITICAL}
+    elif tier == "extended":
+        tiers = {BenchmarkTier.CRITICAL, BenchmarkTier.EXTENDED}
+    elif tier == "all":
+        tiers = {BenchmarkTier.CRITICAL, BenchmarkTier.EXTENDED, BenchmarkTier.SPECIALIZED}
+    else:
+        raise ValueError(f"Unknown tier: {tier}. Use 'critical', 'extended', or 'all'.")
+    return [k for k, v in BENCHMARK_REGISTRY.items() if v.tier in tiers]
 
 
 def list_benchmarks() -> Dict[str, str]:

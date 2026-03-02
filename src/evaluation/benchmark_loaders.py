@@ -32,6 +32,24 @@ class BenchmarkItem:
 class BaseBenchmarkLoader:
     """Base class for benchmark data loaders."""
 
+    # Class-level dataset cache: (hf_dataset, hf_subset, split) -> dataset
+    _dataset_cache: Dict[tuple, Any] = {}
+
+    @classmethod
+    def _get_dataset(cls, hf_dataset: str, hf_subset: Optional[str], split: str):
+        """Load a HuggingFace dataset with caching.
+
+        Eliminates redundant HF loads when load() and get_few_shot_examples()
+        share a split (e.g., TruthfulQA uses validation for both).
+        """
+        cache_key = (hf_dataset, hf_subset, split)
+        if cache_key not in cls._dataset_cache:
+            if hf_subset:
+                cls._dataset_cache[cache_key] = load_dataset(hf_dataset, hf_subset, split=split)
+            else:
+                cls._dataset_cache[cache_key] = load_dataset(hf_dataset, split=split)
+        return cls._dataset_cache[cache_key]
+
     def load(
         self, config: BenchmarkConfig, max_samples: Optional[int] = None
     ) -> List[BenchmarkItem]:
@@ -61,9 +79,7 @@ class MMLULoader(BaseBenchmarkLoader):
     def load(self, config, max_samples=None):
         items = []
         try:
-            dataset = load_dataset(
-                config.hf_dataset, config.hf_subset, split=config.split
-            )
+            dataset = self._get_dataset(config.hf_dataset, config.hf_subset, config.split)
             for idx, row in enumerate(dataset):
                 choices = list(row["choices"])
                 answer_idx = int(row["answer"])
@@ -86,9 +102,7 @@ class MMLULoader(BaseBenchmarkLoader):
     def get_few_shot_examples(self, config, n=5):
         items = []
         try:
-            dataset = load_dataset(
-                config.hf_dataset, config.hf_subset, split=config.few_shot_split
-            )
+            dataset = self._get_dataset(config.hf_dataset, config.hf_subset, config.few_shot_split)
             for idx, row in enumerate(dataset):
                 if idx >= n:
                     break
@@ -117,9 +131,7 @@ class ARCChallengeLoader(BaseBenchmarkLoader):
     def load(self, config, max_samples=None):
         items = []
         try:
-            dataset = load_dataset(
-                config.hf_dataset, config.hf_subset, split=config.split
-            )
+            dataset = self._get_dataset(config.hf_dataset, config.hf_subset, config.split)
             for idx, row in enumerate(dataset):
                 choices = list(row["choices"]["text"])
                 labels = list(row["choices"]["label"])
@@ -148,9 +160,7 @@ class ARCChallengeLoader(BaseBenchmarkLoader):
     def get_few_shot_examples(self, config, n=25):
         items = []
         try:
-            dataset = load_dataset(
-                config.hf_dataset, config.hf_subset, split=config.few_shot_split
-            )
+            dataset = self._get_dataset(config.hf_dataset, config.hf_subset, config.few_shot_split)
             for idx, row in enumerate(dataset):
                 if idx >= n:
                     break
@@ -188,7 +198,7 @@ class HellaSwagLoader(BaseBenchmarkLoader):
     def load(self, config, max_samples=None):
         items = []
         try:
-            dataset = load_dataset(config.hf_dataset, split=config.split)
+            dataset = self._get_dataset(config.hf_dataset, None, config.split)
             for idx, row in enumerate(dataset):
                 ctx = self._clean_text(row.get("ctx", ""))
                 endings = [self._clean_text(e) for e in row["endings"]]
@@ -212,7 +222,7 @@ class HellaSwagLoader(BaseBenchmarkLoader):
     def get_few_shot_examples(self, config, n=10):
         items = []
         try:
-            dataset = load_dataset(config.hf_dataset, split=config.few_shot_split)
+            dataset = self._get_dataset(config.hf_dataset, None, config.few_shot_split)
             for idx, row in enumerate(dataset):
                 if idx >= n:
                     break
@@ -242,9 +252,7 @@ class WinograndeLoader(BaseBenchmarkLoader):
     def load(self, config, max_samples=None):
         items = []
         try:
-            dataset = load_dataset(
-                config.hf_dataset, config.hf_subset, split=config.split
-            )
+            dataset = self._get_dataset(config.hf_dataset, config.hf_subset, config.split)
             for idx, row in enumerate(dataset):
                 sentence = row["sentence"]
                 option1 = row["option1"]
@@ -269,9 +277,7 @@ class WinograndeLoader(BaseBenchmarkLoader):
     def get_few_shot_examples(self, config, n=5):
         items = []
         try:
-            dataset = load_dataset(
-                config.hf_dataset, config.hf_subset, split=config.few_shot_split
-            )
+            dataset = self._get_dataset(config.hf_dataset, config.hf_subset, config.few_shot_split)
             for idx, row in enumerate(dataset):
                 if idx >= n:
                     break
@@ -306,9 +312,7 @@ class GSM8KLoader(BaseBenchmarkLoader):
     def load(self, config, max_samples=None):
         items = []
         try:
-            dataset = load_dataset(
-                config.hf_dataset, config.hf_subset, split=config.split
-            )
+            dataset = self._get_dataset(config.hf_dataset, config.hf_subset, config.split)
             for idx, row in enumerate(dataset):
                 answer_text = self._extract_answer(row["answer"])
                 items.append(
@@ -328,9 +332,7 @@ class GSM8KLoader(BaseBenchmarkLoader):
     def get_few_shot_examples(self, config, n=8):
         items = []
         try:
-            dataset = load_dataset(
-                config.hf_dataset, config.hf_subset, split=config.few_shot_split
-            )
+            dataset = self._get_dataset(config.hf_dataset, config.hf_subset, config.few_shot_split)
             for idx, row in enumerate(dataset):
                 if idx >= n:
                     break
@@ -355,9 +357,7 @@ class TruthfulQALoader(BaseBenchmarkLoader):
     def load(self, config, max_samples=None):
         items = []
         try:
-            dataset = load_dataset(
-                config.hf_dataset, config.hf_subset, split=config.split
-            )
+            dataset = self._get_dataset(config.hf_dataset, config.hf_subset, config.split)
             for idx, row in enumerate(dataset):
                 mc2 = row.get("mc2_targets", {})
                 choices = list(mc2.get("choices", []))
@@ -398,9 +398,7 @@ class TruthfulQALoader(BaseBenchmarkLoader):
         """TruthfulQA uses same split; take from end to avoid overlap."""
         items = []
         try:
-            dataset = load_dataset(
-                config.hf_dataset, config.hf_subset, split=config.split
-            )
+            dataset = self._get_dataset(config.hf_dataset, config.hf_subset, config.split)
             # Take from end of dataset to reduce overlap with eval items
             start = max(0, len(dataset) - n)
             for idx in range(start, len(dataset)):
@@ -442,7 +440,7 @@ class BoolQLoader(BaseBenchmarkLoader):
     def _load_split(self, config, split, max_samples=None):
         items = []
         try:
-            dataset = load_dataset(config.hf_dataset, split=split)
+            dataset = self._get_dataset(config.hf_dataset, None, split)
             for idx, row in enumerate(dataset):
                 answer = row["answer"]  # bool
                 correct_idx = 0 if answer else 1  # 0=Yes, 1=No
@@ -474,7 +472,7 @@ class PIQALoader(BaseBenchmarkLoader):
     def _load_split(self, config, split, max_samples=None):
         items = []
         try:
-            dataset = load_dataset(config.hf_dataset, split=split)
+            dataset = self._get_dataset(config.hf_dataset, None, split)
             for idx, row in enumerate(dataset):
                 sol1, sol2 = row["sol1"], row["sol2"]
                 label = int(row["label"])  # 0 or 1
@@ -505,7 +503,7 @@ class ARCEasyLoader(BaseBenchmarkLoader):
     def _load_split(self, config, split, max_samples=None):
         items = []
         try:
-            dataset = load_dataset(config.hf_dataset, config.hf_subset, split=split)
+            dataset = self._get_dataset(config.hf_dataset, config.hf_subset, split)
             for idx, row in enumerate(dataset):
                 choices = list(row["choices"]["text"])
                 labels = list(row["choices"]["label"])
@@ -540,7 +538,7 @@ class TriviaQALoader(BaseBenchmarkLoader):
     def _load_split(self, config, split, max_samples=None):
         items = []
         try:
-            dataset = load_dataset(config.hf_dataset, config.hf_subset, split=split)
+            dataset = self._get_dataset(config.hf_dataset, config.hf_subset, split)
             for idx, row in enumerate(dataset):
                 answer = row["answer"]
                 canonical = answer.get("value", "")
@@ -597,10 +595,7 @@ class MATHLoader(BaseBenchmarkLoader):
     def _load_split(self, config, split, max_samples=None):
         items = []
         try:
-            if config.hf_subset:
-                dataset = load_dataset(config.hf_dataset, config.hf_subset, split=split)
-            else:
-                dataset = load_dataset(config.hf_dataset, split=split)
+            dataset = self._get_dataset(config.hf_dataset, config.hf_subset, split)
             for idx, row in enumerate(dataset):
                 problem = row.get("problem", row.get("question", ""))
                 solution = row.get("solution", "")
@@ -641,7 +636,7 @@ class HumanEvalLoader(BaseBenchmarkLoader):
     def load(self, config, max_samples=None):
         items = []
         try:
-            dataset = load_dataset(config.hf_dataset, split=config.split)
+            dataset = self._get_dataset(config.hf_dataset, None, config.split)
             for idx, row in enumerate(dataset):
                 items.append(
                     BenchmarkItem(
@@ -672,7 +667,7 @@ class MBPPLoader(BaseBenchmarkLoader):
     def _load_split(self, config, split, max_samples=None):
         items = []
         try:
-            dataset = load_dataset(config.hf_dataset, config.hf_subset, split=split)
+            dataset = self._get_dataset(config.hf_dataset, config.hf_subset, split)
             for idx, row in enumerate(dataset):
                 code = row.get("code", "")
                 items.append(
@@ -718,7 +713,7 @@ class LogiQALoader(BaseBenchmarkLoader):
     def _load_split(self, config, split, max_samples=None):
         items = []
         try:
-            dataset = load_dataset(config.hf_dataset, split=split)
+            dataset = self._get_dataset(config.hf_dataset, None, split)
 
             for idx, row in enumerate(dataset):
                 # Parse JSON from text column
@@ -785,7 +780,7 @@ class FOLIOLoader(BaseBenchmarkLoader):
         items = []
         try:
             actual_split = split if split != "test" else "validation"
-            dataset = load_dataset(config.hf_dataset, split=actual_split)
+            dataset = self._get_dataset(config.hf_dataset, None, actual_split)
 
             for idx, row in enumerate(dataset):
                 premises = row.get("premises", "")
