@@ -147,6 +147,11 @@ TOPIC_CATEGORIES = [
 ]
 
 
+# Maximum items to request per API call.  Larger pools are split into
+# ceil(total / POOL_BATCH_SIZE) parallel calls for speed.
+POOL_BATCH_SIZE = 500
+
+
 class AtomicPropositionGenerator:
     """Generate pools of atomic propositions using OpenAI API."""
 
@@ -174,17 +179,20 @@ class AtomicPropositionGenerator:
         skip_categories: bool = False,
     ) -> PropositionPool:
         """
-        Generate a pool of atomic propositions with a single API call per category.
+        Generate a pool of atomic propositions via parallel batched API calls.
 
-        This makes only a few API calls total, then all examples are generated
-        by sampling from this pool.
+        Each item type (propositions, predicates, relations, entities,
+        categories) is split into batches of at most ``POOL_BATCH_SIZE``
+        items.  All batches across all types are submitted to a
+        ``ThreadPoolExecutor`` concurrently, so the total wall-clock time
+        scales with the *slowest single batch*, not the sum of all batches.
 
         Args:
             topics: Topic categories to generate propositions for.
             verbose: Print progress messages.
-            skip_categories: If True, skip generating categories (saves one
-                API call).  Categories are only used by template-based
-                inference generation, not by the chain generator.
+            skip_categories: If True, skip generating categories (saves API
+                calls).  Categories are only used by template-based inference
+                generation, not by the chain generator.
         """
         topics = topics or TOPIC_CATEGORIES
         pool = PropositionPool()
@@ -192,50 +200,108 @@ class AtomicPropositionGenerator:
         if verbose:
             print("Generating proposition pool...")
 
-        # All generation calls are independent — run them concurrently.
-        tasks = {
-            "propositions": ("Generating propositions...", lambda: self._generate_propositions(topics)),
-            "predicates": ("Generating predicates...", lambda: self._generate_predicates(topics)),
-            "relations": ("Generating relations...", lambda: self._generate_relations()),
-            "entities": ("Generating entity names...", lambda: self._generate_entities()),
+        # --- Compute totals needed for each type ---
+        num_topics = min(5, len(topics))
+        total_propositions = self.config.propositions_per_topic * num_topics
+        total_predicates = self.config.predicates_per_topic * num_topics
+        total_relations = self.config.relations_count
+        total_entities = self.config.entities_count
+        total_categories = self.config.categories_count if not skip_categories else 0
+
+        # --- Plan batches (each ≤ POOL_BATCH_SIZE items) ---
+        prop_batches = self._plan_batches(total_propositions)
+        pred_batches = self._plan_batches(total_predicates)
+        rel_batches = self._plan_batches(total_relations)
+        ent_batches = self._plan_batches(total_entities)
+        cat_batches = self._plan_batches(total_categories) if not skip_categories else []
+
+        # Build a flat list of (key, description, callable) for every batch.
+        batch_tasks: List[Tuple[str, str, Any]] = []
+
+        for i, count in enumerate(prop_batches):
+            # Rotate topic subsets across batches for diversity.
+            offset = (i * 3) % len(topics)
+            batch_topics = (topics[offset:] + topics[:offset])[:num_topics]
+            desc = f"propositions {i + 1}/{len(prop_batches)}"
+            batch_tasks.append((
+                "propositions", desc,
+                lambda c=count, t=batch_topics: self._generate_propositions(t, count=c),
+            ))
+
+        for i, count in enumerate(pred_batches):
+            offset = (i * 3) % len(topics)
+            batch_topics = (topics[offset:] + topics[:offset])[:num_topics]
+            desc = f"predicates {i + 1}/{len(pred_batches)}"
+            batch_tasks.append((
+                "predicates", desc,
+                lambda c=count, t=batch_topics: self._generate_predicates(t, count=c),
+            ))
+
+        for i, count in enumerate(rel_batches):
+            desc = f"relations {i + 1}/{len(rel_batches)}"
+            batch_tasks.append((
+                "relations", desc,
+                lambda c=count: self._generate_relations(count=c),
+            ))
+
+        for i, count in enumerate(ent_batches):
+            desc = f"entities {i + 1}/{len(ent_batches)}"
+            batch_tasks.append((
+                "entities", desc,
+                lambda c=count: self._generate_entities(count=c),
+            ))
+
+        for i, count in enumerate(cat_batches):
+            desc = f"categories {i + 1}/{len(cat_batches)}"
+            batch_tasks.append((
+                "categories", desc,
+                lambda c=count: self._generate_categories(count=c),
+            ))
+
+        total_calls = len(batch_tasks)
+        if verbose:
+            print(f"  Submitting {total_calls} API calls in parallel "
+                  f"(batch size ≤ {POOL_BATCH_SIZE})...")
+
+        # --- Execute all batches concurrently ---
+        collected: Dict[str, list] = {
+            "propositions": [], "predicates": [], "relations": [],
+            "entities": [], "categories": [],
         }
-        if not skip_categories:
-            tasks["categories"] = ("Generating categories...", lambda: self._generate_categories())
 
         try:
-            results: Dict[str, Any] = {}
-            if verbose:
-                print("  Submitting API calls in parallel...")
-            with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
-                future_to_key = {
-                    executor.submit(fn): key
-                    for key, (_desc, fn) in tasks.items()
+            max_workers = min(total_calls, 32)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_map = {
+                    executor.submit(fn): (key, desc)
+                    for key, desc, fn in batch_tasks
                 }
-                for future in as_completed(future_to_key):
-                    key = future_to_key[future]
-                    results[key] = future.result()
-                    desc = tasks[key][0]
-                    count = len(results[key])
+                for future in as_completed(future_map):
+                    key, desc = future_map[future]
+                    result = future.result()
+                    collected[key].extend(result)
                     if verbose:
-                        print(f"    {desc} done ({count} items)")
+                        print(f"    {desc} done ({len(result)} items)")
         except Exception as exc:
             # Fall back to sequential on any thread-pool failure.
             if verbose:
-                print(f"  Parallel generation failed ({exc}), falling back to sequential...")
-            results = {}
-            for key, (desc, fn) in tasks.items():
+                print(f"  Parallel generation failed ({exc}), "
+                      f"falling back to sequential...")
+            collected = {k: [] for k in collected}
+            for key, desc, fn in batch_tasks:
                 if verbose:
-                    print(f"  {desc}")
-                results[key] = fn()
+                    print(f"  {desc}...")
+                result = fn()
+                collected[key].extend(result)
                 if verbose:
-                    print(f"    Generated {len(results[key])} items")
+                    print(f"    Got {len(result)} items")
 
-        pool.propositions = results["propositions"]
-        pool.predicates = results["predicates"]
-        pool.relations = results["relations"]
-        pool.entities = EntityPool(names=results["entities"])
-        if "categories" in results:
-            pool.categories = results["categories"]
+        # --- Deduplicate across batches and assign to pool ---
+        pool.propositions = self._deduplicate_propositions(collected["propositions"])
+        pool.predicates = self._deduplicate_propositions(collected["predicates"])
+        pool.relations = self._deduplicate_propositions(collected["relations"])
+        pool.categories = self._deduplicate_propositions(collected["categories"])
+        pool.entities = EntityPool(names=list(dict.fromkeys(collected["entities"])))
 
         self.pool = pool
 
@@ -249,12 +315,46 @@ class AtomicPropositionGenerator:
             )
 
         if verbose:
-            print("Pool generation complete!")
+            print(f"Pool generation complete! "
+                  f"({len(pool.propositions)} propositions, "
+                  f"{len(pool.predicates)} predicates, "
+                  f"{len(pool.relations)} relations, "
+                  f"{len(pool.entities.names)} entities"
+                  f"{', ' + str(len(pool.categories)) + ' categories' if pool.categories else ''})")
 
         return pool
 
-    def _generate_propositions(self, topics: List[str]) -> List[AtomicProposition]:
+    # -- Batch planning helpers ------------------------------------------------
+
+    @staticmethod
+    def _plan_batches(total: int) -> List[int]:
+        """Split *total* into batch counts, each ≤ ``POOL_BATCH_SIZE``."""
+        if total <= 0:
+            return []
+        num_batches = max(1, -(-total // POOL_BATCH_SIZE))  # ceil division
+        base, rem = divmod(total, num_batches)
+        return [base + (1 if i < rem else 0) for i in range(num_batches)]
+
+    @staticmethod
+    def _deduplicate_propositions(
+        items: List[AtomicProposition],
+    ) -> List[AtomicProposition]:
+        """Deduplicate a list of ``AtomicProposition`` by text, preserving order."""
+        seen: set = set()
+        result: List[AtomicProposition] = []
+        for item in items:
+            key = item.text.lower()
+            if key not in seen:
+                seen.add(key)
+                result.append(item)
+        return result
+
+    def _generate_propositions(
+        self, topics: List[str], *, count: Optional[int] = None,
+    ) -> List[AtomicProposition]:
         """Generate full propositions for propositional logic."""
+        if count is None:
+            count = self.config.propositions_per_topic * len(topics[:5])
         prompt = f"""Generate a diverse list of simple, atomic propositions that can be true or false.
 These will be used for logic reasoning examples.
 
@@ -266,7 +366,7 @@ Requirements:
 - Propositions should be concrete and specific, not abstract
 - Include cause-effect pairs (e.g., "it is raining" and "the ground is wet")
 - Keep each proposition under 10 words
-- Generate at least {self.config.propositions_per_topic * len(topics[:5])} propositions
+- Generate at least {count} propositions
 
 Respond with a JSON array of strings only:
 ["it is raining", "the ground is wet", ...]"""
@@ -279,8 +379,12 @@ Respond with a JSON array of strings only:
             for p in propositions
         ]
 
-    def _generate_predicates(self, topics: List[str]) -> List[AtomicProposition]:
+    def _generate_predicates(
+        self, topics: List[str], *, count: Optional[int] = None,
+    ) -> List[AtomicProposition]:
         """Generate predicates for first-order logic (e.g., 'tall', 'red', 'edible')."""
+        if count is None:
+            count = self.config.predicates_per_topic * len(topics[:5])
         prompt = f"""Generate a diverse list of predicates (adjectives, past participles, or noun phrases) that can describe things.
 These will be used in first-order logic statements like "X is [predicate]", so they MUST be grammatically correct after "is".
 
@@ -294,7 +398,7 @@ Requirements:
 - Start each predicate with a lowercase letter
 - Generate predicates that can form logical chains (e.g., "made of metal" implies "a conductor")
 - Keep each predicate under 5 words
-- Generate at least {self.config.predicates_per_topic * len(topics[:5])} predicates
+- Generate at least {count} predicates
 
 Respond with a JSON array of strings only:
 ["tall", "made of metal", "edible", "flexible", "able to fly", ...]"""
@@ -328,8 +432,10 @@ Respond with a JSON array of strings only:
             for p in valid
         ]
 
-    def _generate_relations(self) -> List[AtomicProposition]:
+    def _generate_relations(self, *, count: Optional[int] = None) -> List[AtomicProposition]:
         """Generate relations for relational reasoning (e.g., 'loves', 'is taller than')."""
+        if count is None:
+            count = self.config.relations_count
         prompt = f"""Generate a list of binary relations that can hold between two entities.
 These will be used in statements like "A [relation] B".
 
@@ -337,7 +443,7 @@ Requirements:
 - Include various types: social, physical, temporal, causal
 - Each relation should be a verb or verb phrase
 - Some should imply properties (e.g., "teaches" implies the first entity is knowledgeable)
-- Generate at least {self.config.relations_count} relations
+- Generate at least {count} relations
 
 Respond with a JSON array of strings only:
 ["loves", "is taller than", "teaches", ...]"""
@@ -350,15 +456,17 @@ Respond with a JSON array of strings only:
             for r in relations
         ]
 
-    def _generate_categories(self) -> List[AtomicProposition]:
+    def _generate_categories(self, *, count: Optional[int] = None) -> List[AtomicProposition]:
         """Generate categories for universal statements (e.g., 'mammals', 'vehicles')."""
+        if count is None:
+            count = self.config.categories_count
         prompt = f"""Generate a list of category/type nouns for universal statements.
 These will be used in statements like "All [category] are..." or "X is a [category]".
 
 Requirements:
 - Include natural kinds (animals, plants), artifacts (vehicles, tools), abstract categories
 - Each should be a plural noun or noun phrase
-- Generate at least {self.config.categories_count} categories
+- Generate at least {count} categories
 
 Respond with a JSON array of strings only:
 ["mammals", "vehicles", "students", ...]"""
@@ -371,8 +479,10 @@ Respond with a JSON array of strings only:
             for c in categories
         ]
 
-    def _generate_entities(self) -> List[str]:
+    def _generate_entities(self, *, count: Optional[int] = None) -> List[str]:
         """Generate entity names for first-order logic."""
+        if count is None:
+            count = self.config.entities_count
         prompt = f"""Generate a list of specific entity names for logic examples.
 These will be used as specific instances in statements.
 
@@ -380,7 +490,7 @@ Requirements:
 - Include person names (diverse), place names, object descriptions
 - Mix of proper nouns and definite descriptions
 - Use lowercase for common nouns and articles (e.g., "the red car", "the old house") — only capitalise proper nouns (e.g., "John", "Mount Everest", "Paris")
-- Generate at least {self.config.entities_count} entity names
+- Generate at least {count} entity names
 
 Respond with a JSON array of strings only:
 ["John", "the red car", "Paris", ...]"""
