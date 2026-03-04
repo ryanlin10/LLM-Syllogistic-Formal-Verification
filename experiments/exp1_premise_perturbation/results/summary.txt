@@ -1,0 +1,106 @@
+=== Experiment 1: Premise Perturbation ===
+
+N examples: 100
+Original accuracy:                        0.860 (86/100)
+Post-perturbation accuracy (matches GT):  0.740 (74/100)
+Accuracy drop (orig - perturbed):         0.120
+Sensitivity (conclusion changed):          0.160 (16/100)
+
+Interpretation:
+  HIGH sensitivity (~1.0): model responds to premise changes → generalises
+  LOW sensitivity (~0.0): model may be memorising conclusions
+
+=== Sample Perturbation Cases ===
+
+ID: 615b6311-5b54-47b9-a120-1071198425df
+  Ground truth: {for all x, x is unstable}
+  Perturbed premise [3]:
+    Before: {Paris La Défense is a delivery if and only if Paris La Défense is a delivery}
+    After:  {Priya Patel Défense is a delivery if and only if Paris La Défense is a delivery}
+  Original conclusion:  {for all x, x is unstable} (correct=True)
+  Perturbed conclusion: {for all x, x is unstable} (correct=True)
+  Conclusion changed: False
+
+ID: 81b10712-576d-4887-92d3-593158554185
+  Ground truth: the hamster wheel spins
+  Perturbed premise [2]:
+    Before: {if {sales increased or i put jam on toast}, then the hamster wheel spins}
+    After:  {if {sales increased or i put silent on toast}, then the hamster wheel spins}
+  Original conclusion:  the hamster wheel spins (correct=True)
+  Perturbed conclusion: the hamster wheel spins (correct=True)
+  Conclusion changed: False
+
+ID: 0648aab7-4dfe-4738-8569-8b062f5a102c
+  Ground truth: the rice is rinsed
+  Perturbed premise [2]:
+    Before: {{{it is not the case that the parade includes drummers} if and only if the sprinkler runs} if and only if {the sprinkler runs and {the traveler tips the guide if and only if the soup is hot}}}
+    After:  {{{it is not the case that the parade includes drummers} if and only if the sprinkler runs} if and only if {the sprinkler runs and {the traveler tips the faded if and only if the soup is hot}}}
+  Original conclusion:  the rice is rinsed (correct=True)
+  Perturbed conclusion: <PREMISE> {{the sprinkler runs and the rice is rinsed} if and only if the traveler tips the guide} </PREMISE>
+<PREMISE> {if {the sprinkler runs and {the traveler tips the guide if and only if the soup is hot}}, then the traveler tips the guide} </PREMISE>
+<PREMISE> {{{it is not the case that the parade includes drummers} if and only if the sprinkler runs} if and only if {the sprinkler runs and {the traveler tips the faded if and only if the soup is hot}}} (correct=False)
+  Conclusion changed: True
+
+ID: c5bfdbe5-d040-4849-9903-aae68e96a3bd
+  Ground truth: {for all w, w is UNESCO-listed}
+  Perturbed premise [1]:
+    Before: {if the hard pillow is a promotional poster, then {for all w, w is UNESCO-listed}}
+    After:  {if the hard pillow is rusty, then {for all w, w is UNESCO-listed}}
+  Original conclusion:  {for all w, w is UNESCO-listed} (correct=True)
+  Perturbed conclusion: {for all w, w is UNESCO-listed} (correct=True)
+  Conclusion changed: False
+
+ID: cca01c79-a0fd-490f-b906-e38783e4095c
+  Ground truth: the road has a pothole
+  Perturbed premise [1]:
+    Before: {{{the union calls a strike or {erosion increases after deforestation or the driver sees better}} or erosion increases after deforestation} if and only if the road has a pothole}
+    After:  {{{the union calls a strike or {erosion increases after deforestation or the rigid sees better}} or erosion increases after deforestation} if and only if the road has a pothole}
+  Original conclusion:  the road has a pothole (correct=True)
+  Perturbed conclusion: the road has a pothole (correct=True)
+  Conclusion changed: False
+
+ID: 098d173f-069a-4c20-a4d9-8d0e91b45204
+  Ground truth: the homework is missing
+  Perturbed premise [0]:
+    Before: {{{it is not the case that a pair is incomplete} if and only if {it is not the case that the lab uses microscopes}} if and only if the homework is missing}
+    After:  {{{it is not the case that a pair is incomplete} if and only if {it is not the case that the lab uses ancient}} if and only if the homework is missing}
+  Original conclusion:  the homework is missing (correct=True)
+  Perturbed conclusion: the homework is missing (correct=True)
+  Conclusion changed: False
+
+ID: a6edc103-5830-4a62-bbff-9cc1438f32de
+  Ground truth: the placemat is a scheduled service
+  Perturbed premise [3]:
+    Before: {it is not the case that {it is not the case that {if {if the cup of tea is locally sourced, then {the wedding guest is a linguistic group or the placemat is a written constitution}}, then the placemat is a linguistic group}}}
+    After:  {it is not the case that {it is not the case that {if {if the cup of tea is crisp, then {the wedding guest is a linguistic group or the placemat is a written constitution}}, then the placemat is a linguistic group}}}
+  Original conclusion:  the placemat is a scheduled service (correct=True)
+  Perturbed conclusion: the placemat is a scheduled service (correct=True)
+  Conclusion changed: False
+
+ID: f74c40ba-6526-4911-99f2-8244687150b3
+  Ground truth: the scarf is an intangible asset
+  Perturbed premise [9]:
+    Before: {if the chat transcript is an intangible asset, then the customer survey is an intangible asset}
+    After:  {if the chat transcript is frozen, then the customer survey is an intangible asset}
+  Original conclusion:  the scarf is an intangible asset (correct=True)
+  Perturbed conclusion: the scarf is an intangible asset (correct=True)
+  Conclusion changed: False
+
+ID: a8b66209-c997-4924-bd46-feed18ce663e
+  Ground truth: {for all x, x is edwardian}
+  Perturbed premise [2]:
+    Before: {if {there exist w such that w is serene}, then {{for all x, x is edwardian} and {for all x, x is a construction vehicle}}}
+    After:  {if {there exist w such that w is serene}, then {{for all x, x is edwardian} and {for all x, x is faded}}}
+  Original conclusion:  {for all x, x is edwardian} (correct=True)
+  Perturbed conclusion: {for all x, x is edwardian} (correct=True)
+  Conclusion changed: False
+
+ID: 69c5471d-7734-48f0-ade8-02d2cb6b7bf1
+  Ground truth: Marta Wójcik is strength-based
+  Perturbed premise [2]:
+    Before: {if {it is not the case that {{for all w, w is a buyer's market} and Hassan El-Khatib is fog-prone}}, then Hassan El-Khatib is fog-prone}
+    After:  {if {it is not the case that {{for all w, w is a buyer's market} and Yuki Tanaka-Khatib is fog-prone}}, then Hassan El-Khatib is fog-prone}
+  Original conclusion:  Hassan El-Khatib is bulletproof (correct=False)
+  Perturbed conclusion: Hassan El-Khatib is bulletproof (correct=False)
+  Conclusion changed: False
+

@@ -1,0 +1,68 @@
+=== Experiment 5: Probing Classifiers ===
+
+Dataset: 200 examples (100 valid, 100 invalid)
+Probe layers: [0, 7, 15, 23, 31, 39]
+
+Probe A: Validity Detection (Logistic Regression)
+  Random baseline: 0.500
+
+  [Base model]
+    Layer   0: 0.5500
+    Layer   7: 0.7750
+    Layer  15: 0.8000
+    Layer  23: 0.8000
+    Layer  31: 0.8000
+    Layer  39: 0.8000
+    Best: Layer 15 = 0.8000
+
+  [Stage 0]
+    Layer   0: 0.5000
+    Layer   7: 0.8000
+    Layer  15: 0.7750
+    Layer  23: 0.8000
+    Layer  31: 0.7750
+    Layer  39: 0.7250
+    Best: Layer 7 = 0.8000
+
+  [Stage 1]
+    Layer   0: 0.5250
+    Layer   7: 0.8750
+    Layer  15: 0.7750
+    Layer  23: 0.8000
+    Layer  31: 0.7500
+    Layer  39: 0.7250
+    Best: Layer 7 = 0.8750
+
+Probe B: Premise Count (Ridge Regression, R²)
+
+  [Base model]
+    Layer   0: 0.2061
+    Layer   7: 0.3270
+    Layer  15: 0.2887
+    Layer  23: 0.4511
+    Layer  31: 0.3644
+    Layer  39: 0.3332
+    Best: Layer 23 = 0.4511
+
+  [Stage 0]
+    Layer   0: 0.1994
+    Layer   7: 0.3387
+    Layer  15: 0.1518
+    Layer  23: 0.3600
+    Layer  31: 0.3169
+    Layer  39: 0.2896
+    Best: Layer 23 = 0.3600
+
+  [Stage 1]
+    Layer   0: 0.1939
+    Layer   7: 0.5081
+    Layer  15: 0.4469
+    Layer  23: 0.3794
+    Layer  31: 0.2590
+    Layer  39: 0.2453
+    Best: Layer 7 = 0.5081
+
+Interpretation:
+  Validity probe accuracy jump from base→adapted: model developed new representations.
+  High base accuracy + low generation: LoRA unlocked existing capability.
+  Premise count R²~1 in early layers: model encodes structural metadata early.

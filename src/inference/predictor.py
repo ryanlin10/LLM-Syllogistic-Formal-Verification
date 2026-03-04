@@ -52,25 +52,43 @@ def _patch_mistral_tokenizer():
         pass  # If patching fails, proceed and let vLLM report the real error
 
 
+_MIN_FREE_VRAM_GIB = 4.0  # hard floor: can't load even a small model with less
+
+
 def _safe_gpu_memory_utilization(requested: float = 0.9, headroom: float = 0.05) -> float:
     """Return a gpu_memory_utilization that fits within current free VRAM.
 
     If the requested value would exceed free memory, scales it down to
     (free / total) * (1 - headroom), capped at the requested value.
+
+    Raises RuntimeError early when free VRAM is clearly insufficient to load
+    any model, rather than letting vLLM crash with a cryptic CUDA OOM.
     """
     try:
         import torch
         if torch.cuda.is_available():
             free, total = torch.cuda.mem_get_info()
+            free_gib = free / 2**30
+            total_gib = total / 2**30
+            if free_gib < _MIN_FREE_VRAM_GIB:
+                raise RuntimeError(
+                    f"Insufficient free GPU memory: only {free_gib:.2f} GiB free "
+                    f"out of {total_gib:.1f} GiB total. Another process is likely "
+                    f"occupying the GPU. Run 'nvidia-smi' to identify it, free memory, "
+                    f"then retry."
+                )
             max_safe = (free / total) * (1.0 - headroom)
             if requested > max_safe:
-                adjusted = round(max_safe, 2)
+                # Keep at least 3 significant figures so we never round down to 0.0.
+                adjusted = max(round(max_safe, 3), 1e-3)
                 print(
                     f"[VLLMPredictor] Requested gpu_memory_utilization={requested} exceeds "
-                    f"available VRAM ({free/2**30:.1f}/{total/2**30:.1f} GiB free). "
+                    f"available VRAM ({free_gib:.1f}/{total_gib:.1f} GiB free). "
                     f"Lowering to {adjusted}."
                 )
                 return adjusted
+    except RuntimeError:
+        raise
     except Exception:
         pass
     return requested
@@ -89,6 +107,7 @@ class VLLMPredictor:
         download_dir: Optional[str] = None,
         hf_token: Optional[str] = None,
         enforce_eager: bool = False,
+        hf_overrides: Optional[dict] = None,
     ):
         """
         Initialize the vLLM predictor.
@@ -109,6 +128,11 @@ class VLLMPredictor:
             enforce_eager: Disable CUDA graph compilation (default False). Set
                 True only when the compilation cache disk is full or for
                 debugging; it causes a 2–4× throughput regression.
+            hf_overrides: Dict of HuggingFace config fields to override before
+                vLLM resolves the model architecture. Use
+                ``{"architectures": ["MistralForCausalLM"]}`` to force
+                text-only loading for Pixtral/multimodal Mistral models,
+                skipping the vision-encoder wrapper.
         """
         import os
         # Set HF_TOKEN before vLLM spawns its EngineCore subprocess so the child
@@ -142,6 +166,8 @@ class VLLMPredictor:
             "limit_mm_per_prompt": {"image": 0},
             "enforce_eager": enforce_eager,
         }
+        if hf_overrides:
+            llm_kwargs["hf_overrides"] = hf_overrides
 
         if lora_adapter_path:
             llm_kwargs["enable_lora"] = True

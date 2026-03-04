@@ -1,0 +1,50 @@
+=== LoRA Weight SVD Analysis ===
+
+[STAGE0]
+  Total Frobenius norm sum: 57.9495
+  Avg norm — attention modules: 0.1006
+  Avg norm — MLP modules:       0.3487
+  Top-10 (layer, module, norm):
+    Layer  37  gate_proj     1.3189
+    Layer  38  gate_proj     1.2865
+    Layer  36  gate_proj     1.2517
+    Layer  35  gate_proj     1.1919
+    Layer  39  gate_proj     1.1892
+    Layer  37  up_proj       1.1839
+    Layer  38  up_proj       1.1823
+    Layer  24  gate_proj     1.1214
+    Layer  39  up_proj       1.1178
+    Layer  34  gate_proj     1.0841
+  Singular value concentration:
+    q_proj        top-2/total=0.279  eff_rank=12.21
+    k_proj        top-2/total=0.272  eff_rank=12.50
+    v_proj        top-2/total=0.334  eff_rank=10.48
+    o_proj        top-2/total=0.246  eff_rank=13.24
+    gate_proj     top-2/total=0.277  eff_rank=12.15
+    up_proj       top-2/total=0.222  eff_rank=14.12
+    down_proj     top-2/total=0.366  eff_rank=9.10
+
+[STAGE1]
+  Total Frobenius norm sum: 84.4507
+  Avg norm — attention modules: 0.1488
+  Avg norm — MLP modules:       0.5053
+  Top-10 (layer, module, norm):
+    Layer  37  gate_proj     1.7433
+    Layer  36  gate_proj     1.7208
+    Layer  38  gate_proj     1.6817
+    Layer  35  gate_proj     1.6381
+    Layer  24  gate_proj     1.6246
+    Layer  37  up_proj       1.5541
+    Layer  25  gate_proj     1.5432
+    Layer  38  up_proj       1.5422
+    Layer  39  gate_proj     1.5396
+    Layer  27  gate_proj     1.5245
+  Singular value concentration:
+    q_proj        top-2/total=0.270  eff_rank=12.50
+    k_proj        top-2/total=0.271  eff_rank=12.45
+    v_proj        top-2/total=0.306  eff_rank=11.46
+    o_proj        top-2/total=0.231  eff_rank=13.79
+    gate_proj     top-2/total=0.270  eff_rank=12.47
+    up_proj       top-2/total=0.219  eff_rank=14.28
+    down_proj     top-2/total=0.347  eff_rank=9.72
+

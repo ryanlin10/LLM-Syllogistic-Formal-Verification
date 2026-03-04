@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Simple inference demo using vLLM."""
 
+import json
 import sys
 import argparse
 from pathlib import Path
@@ -47,6 +48,15 @@ def main():
         "--hf-token", type=str, default=None,
         help="HuggingFace token for gated models (or set HF_TOKEN env var)"
     )
+    parser.add_argument(
+        "--hf-overrides", type=str, default=None,
+        metavar="JSON",
+        help=(
+            "JSON dict of HuggingFace config overrides passed to vLLM. "
+            "Use '{\"architectures\":[\"MistralForCausalLM\"]}' to force "
+            "text-only loading for Pixtral/multimodal Mistral checkpoints."
+        ),
+    )
     args = parser.parse_args()
 
     project_root = Path(__file__).parent.parent
@@ -65,6 +75,14 @@ def main():
     if lora_adapter_path:
         print(f"With LoRA adapter: {lora_adapter_path}")
 
+    hf_overrides = None
+    if args.hf_overrides:
+        try:
+            hf_overrides = json.loads(args.hf_overrides)
+        except json.JSONDecodeError as exc:
+            print(f"ERROR: --hf-overrides is not valid JSON: {exc}", file=sys.stderr)
+            sys.exit(1)
+
     predictor = VLLMPredictor(
         model_path=model_path,
         lora_adapter_path=lora_adapter_path,
@@ -73,6 +91,7 @@ def main():
         max_model_len=args.max_model_len,
         download_dir=args.download_dir,
         hf_token=args.hf_token,
+        hf_overrides=hf_overrides,
     )
 
     message = args.message

@@ -162,6 +162,22 @@ class GRPOConfig:
 
     # Reward
     task_type: str = "free_form"   # for SoundnessReward.score
+    verifier_weight: float = 0.3   # weight for process/verifier reward component
+    outcome_weight: float = 0.7    # weight for outcome (correct answer) reward component
+    correct_reward: float = 1.0    # outcome signal for a correct answer
+    wrong_reward: float = -1.0     # outcome signal for a wrong answer (negative = penalty)
+    skip_z3_verify: bool = False   # skip Z3 per-step verification (use optimistic process reward)
+
+    # Attention / compute
+    use_flash_attention: bool = True  # use flash_attention_2 if available
+
+    # Parallel Z3 verification
+    # Number of worker threads for concurrent Z3 segment verification.
+    # Z3's C extension releases the GIL during solver.check(), so threads give
+    # true parallelism.  At B*G=16 responses x ~5 segments = 80 calls: with 16
+    # workers this reduces sequential 400 s worst-case to ~25 s.
+    # Set to 0 to disable (fall back to sequential per-response verification).
+    n_verify_workers: int = 16
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +262,10 @@ class GRPOTrainer:
 
         total_prompts = len(train_data)
         self.global_step = 0
-        running_stats: Dict[str, float] = {"loss": 0.0, "reward": 0.0, "kl": 0.0, "adv": 0.0}
+        running_stats: Dict[str, float] = {
+            "loss": 0.0, "reward": 0.0, "kl": 0.0, "adv": 0.0,
+            "process_reward": 0.0, "outcome_reward": 0.0,
+        }
 
         for epoch in range(cfg.num_epochs):
             # Shuffle data each epoch.
@@ -273,11 +292,17 @@ class GRPOTrainer:
                 if self.global_step % cfg.logging_steps == 0:
                     avg = {k: v / cfg.logging_steps for k, v in running_stats.items()}
                     logger.info(
-                        "step=%d  epoch=%d  loss=%.4f  reward=%.4f  kl=%.4f  adv_std=%.4f",
-                        self.global_step, epoch + 1, avg["loss"], avg["reward"], avg["kl"], avg["adv"],
+                        "step=%d  epoch=%d  loss=%.4f  reward=%.4f  "
+                        "verifier=%.4f  outcome=%.4f  kl=%.4f  adv_std=%.4f",
+                        self.global_step, epoch + 1,
+                        avg["loss"], avg["reward"],
+                        avg["process_reward"], avg["outcome_reward"],
+                        avg["kl"], avg["adv"],
                     )
                     if WANDB_AVAILABLE and wandb.run is not None:
-                        wandb.log({f"grpo/{k}": v for k, v in avg.items()}, step=self.global_step)
+                        log_dict = {f"grpo/{k}": v for k, v in avg.items()}
+                        log_dict["grpo/lr"] = self.scheduler.get_last_lr()[0]
+                        wandb.log(log_dict, step=self.global_step)
                     running_stats = {k: 0.0 for k in running_stats}
 
                 # Save checkpoint.
@@ -286,6 +311,8 @@ class GRPOTrainer:
 
             mean_reward = sum(epoch_rewards) / max(len(epoch_rewards), 1)
             logger.info("Epoch %d/%d complete  --  mean reward = %.4f", epoch + 1, cfg.num_epochs, mean_reward)
+            if WANDB_AVAILABLE and wandb.run is not None:
+                wandb.log({"grpo/epoch_mean_reward": mean_reward, "epoch": epoch + 1}, step=self.global_step)
 
         # Save final model.
         final_dir = output_dir / "final"
@@ -326,25 +353,39 @@ class GRPOTrainer:
                 bnb_4bit_use_double_quant=True,
             )
 
+        # Determine attention implementation.
+        attn_impl = None
+        if cfg.use_flash_attention:
+            try:
+                import flash_attn  # noqa: F401
+                attn_impl = "flash_attention_2"
+                logger.info("Flash Attention 2 enabled")
+            except ImportError:
+                logger.info("flash_attn not installed; using SDPA (PyTorch built-in)")
+                attn_impl = "sdpa"
+
+        def _load_kwargs():
+            kw = dict(
+                torch_dtype=dtype,
+                device_map="auto",
+                trust_remote_code=True,
+                quantization_config=quant_config,
+            )
+            if attn_impl:
+                kw["attn_implementation"] = attn_impl
+            return kw
+
         logger.info("Loading base model: %s", hf_name)
         model_class_name = model_info.get("model_class")
         if model_class_name == "Mistral3ForConditionalGeneration":
             from transformers.models.mistral3.modeling_mistral3 import Mistral3ForConditionalGeneration
             logger.info("Using special model class: %s", model_class_name)
             base_model = Mistral3ForConditionalGeneration.from_pretrained(
-                hf_name,
-                torch_dtype=dtype,
-                device_map="auto",
-                trust_remote_code=True,
-                quantization_config=quant_config,
+                hf_name, **_load_kwargs()
             )
         else:
             base_model = AutoModelForCausalLM.from_pretrained(
-                hf_name,
-                torch_dtype=dtype,
-                device_map="auto",
-                trust_remote_code=True,
-                quantization_config=quant_config,
+                hf_name, **_load_kwargs()
             )
 
         # Tokenizer.
@@ -405,7 +446,14 @@ class GRPOTrainer:
                 self.reward_fn = None
                 return
 
-        self.reward_fn = SoundnessReward()
+        self.reward_fn = SoundnessReward(
+            verifier_weight=self.config.verifier_weight,
+            outcome_weight=self.config.outcome_weight,
+            correct_reward=self.config.correct_reward,
+            wrong_reward=self.config.wrong_reward,
+            skip_verify=self.config.skip_z3_verify,
+            n_verify_workers=self.config.n_verify_workers,
+        )
 
     def _setup_optimizer(self, num_train_examples: int) -> None:
         """Create the AdamW optimizer and a linear warmup scheduler."""
@@ -440,130 +488,166 @@ class GRPOTrainer:
     ) -> Dict[str, Any]:
         """Execute a single GRPO optimisation step for a batch of prompts.
 
-        For each prompt we:
-        1. Generate ``group_size`` responses.
-        2. Score them with the reward function.
-        3. Compute group-relative advantages.
-        4. Compute the clipped surrogate + KL loss.
-        5. Back-propagate (with gradient accumulation support).
+        All B prompts are tiled to B*G sequences and passed to model.generate()
+        in one call, then the policy and reference forward passes each process
+        all B*G sequences at once.  This keeps the GPU batch large and avoids
+        the per-prompt sequential loop that leaves the GPU underutilised.
 
         Returns:
             Dictionary of scalar metrics for this step.
         """
         cfg = self.config
-        G = cfg.group_size
-        B = len(prompts)
+        B   = len(prompts)
+        G   = cfg.group_size
 
-        # Tokenise prompts.
-        prompt_encodings = self.tokenizer(
+        # ------------------------------------------------------------------ #
+        # 1. Tokenise all B prompts.                                          #
+        #    The tokeniser left-pads shorter prompts to the longest in the    #
+        #    batch, so every row shares the same padded prefix length P.      #
+        # ------------------------------------------------------------------ #
+        enc = self.tokenizer(
             prompts,
             return_tensors="pt",
             padding=True,
             truncation=True,
             max_length=cfg.max_prompt_length,
         ).to(self.device)
+        prompt_ids  = enc["input_ids"]        # (B, P)
+        prompt_mask = enc["attention_mask"]   # (B, P)
+        P = prompt_ids.shape[1]               # padded prompt length, same for all
 
-        prompt_ids = prompt_encodings["input_ids"]         # (B, prompt_len)
-        prompt_mask = prompt_encodings["attention_mask"]    # (B, prompt_len)
-        prompt_lengths = prompt_mask.sum(dim=1).tolist()    # list of int
-
-        # -- Generate G responses per prompt ----------------------------------
-        all_sequences: List[torch.Tensor] = []        # each (G, seq_len)
-        all_old_log_probs: List[torch.Tensor] = []    # each (G, gen_len)
-        all_gen_masks: List[torch.Tensor] = []         # each (G, gen_len)
+        # ------------------------------------------------------------------ #
+        # 2. Tile to (B*G, P) and generate all responses in one call.        #
+        #    repeat_interleave groups responses by prompt:                    #
+        #      rows [0 .. G-1]    → prompt 0                                 #
+        #      rows [G .. 2G-1]   → prompt 1, …                              #
+        # ------------------------------------------------------------------ #
+        tiled_ids  = prompt_ids.repeat_interleave(G, dim=0)   # (B*G, P)
+        tiled_mask = prompt_mask.repeat_interleave(G, dim=0)  # (B*G, P)
 
         self.model.eval()
         with torch.no_grad():
-            for i in range(B):
-                seqs, lps, gmask = self._generate_group(
-                    prompt_ids[i : i + 1], prompt_mask[i : i + 1]
-                )
-                all_sequences.append(seqs)
-                all_old_log_probs.append(lps)
-                all_gen_masks.append(gmask)
+            gen_out = self.model.generate(
+                input_ids=tiled_ids,
+                attention_mask=tiled_mask,
+                max_new_tokens=cfg.max_gen_length,
+                do_sample=True,
+                temperature=cfg.temperature,
+                top_p=cfg.top_p,
+                pad_token_id=self.tokenizer.pad_token_id,
+                return_dict_in_generate=True,
+                output_logits=True,   # raw per-step logits → old log-probs, no extra pass
+            )
         self.model.train()
 
-        # -- Score responses ---------------------------------------------------
-        all_rewards = self._decode_and_score(
-            all_sequences, prompt_lengths, targets
-        )  # (B * G,)
-        batch_rewards_list = all_rewards.tolist()
+        sequences = gen_out.sequences              # (B*G, P + gen_len)
+        gen_ids   = sequences[:, P:]               # (B*G, gen_len)
+        gen_mask  = (gen_ids != self.tokenizer.pad_token_id).float()  # (B*G, gen_len)
+        gen_len   = gen_ids.shape[1]
 
-        # -- Compute group-relative advantages --------------------------------
-        advantages = torch.zeros_like(all_rewards)
+        # Old log-probs extracted from the generation-time logits — avoids a
+        # separate forward pass.  Process one time-step at a time to avoid
+        # materialising the full (B*G, gen_len, vocab) tensor (~8-17 GB at
+        # B*G=32, gen_len=512, vocab=131k).
+        if gen_out.logits and len(gen_out.logits) == gen_len:
+            old_lps = torch.stack([
+                F.log_softmax(logit_t, dim=-1)          # (B*G, vocab)
+                 .gather(-1, gen_ids[:, t : t + 1])     # (B*G, 1)
+                 .squeeze(-1)                            # (B*G,)
+                for t, logit_t in enumerate(gen_out.logits)
+            ], dim=1)                                   # (B*G, gen_len)
+        else:
+            # Edge-case fallback (e.g. older transformers version).
+            with torch.no_grad():
+                old_lps = self._compute_log_probs(
+                    self.model,
+                    sequences,
+                    torch.ones_like(sequences, dtype=torch.long),
+                    gen_ids, P,
+                )
+
+        # ------------------------------------------------------------------ #
+        # 3. Decode, expand targets / task-types, and score all B*G outputs. #
+        # ------------------------------------------------------------------ #
+        all_texts   = [
+            self.tokenizer.decode(gen_ids[k], skip_special_tokens=True)
+            for k in range(B * G)
+        ]
+        all_targets = [targets[i] for i in range(B) for _ in range(G)]
+        all_types   = [cfg.task_type] * (B * G)
+
+        if self.reward_fn is not None:
+            results         = self.reward_fn.score_batch(all_texts, all_targets, all_types)
+            all_rewards     = torch.tensor([r.reward          for r in results], dtype=torch.float32, device=self.device)
+            process_rewards = torch.tensor([r.process_reward  for r in results], dtype=torch.float32, device=self.device)
+            outcome_rewards = torch.tensor([r.outcome_reward  for r in results], dtype=torch.float32, device=self.device)
+        else:
+            all_rewards     = self._fallback_reward(all_texts, all_targets)
+            process_rewards = torch.zeros_like(all_rewards)
+            outcome_rewards = all_rewards.clone()
+
+        # ------------------------------------------------------------------ #
+        # 4. Group-relative advantages (normalise within each prompt's group).#
+        # ------------------------------------------------------------------ #
+        advantages = torch.zeros(B * G, dtype=torch.float32, device=self.device)
         for i in range(B):
-            group_r = all_rewards[i * G : (i + 1) * G]
-            mean_r = group_r.mean()
-            std_r = group_r.std() + cfg.advantage_eps
-            advantages[i * G : (i + 1) * G] = (group_r - mean_r) / std_r
+            sl      = slice(i * G, (i + 1) * G)
+            group_r = all_rewards[sl]
+            advantages[sl] = (group_r - group_r.mean()) / (group_r.std() + cfg.advantage_eps)
 
-        # -- GRPO loss --------------------------------------------------------
-        metrics = self._grpo_step(
-            all_sequences, all_old_log_probs, all_gen_masks,
-            prompt_lengths, advantages,
-        )
-
-        metrics["reward"] = all_rewards.mean().item()
-        metrics["adv"] = advantages.std().item()
-        metrics["batch_rewards"] = batch_rewards_list
-        return metrics
-
-    @torch.no_grad()
-    def _generate_group(
-        self,
-        prompt_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Generate ``group_size`` responses for a single prompt.
-
-        Args:
-            prompt_ids: (1, prompt_len) token IDs.
-            attention_mask: (1, prompt_len) attention mask.
-
-        Returns:
-            sequences: (G, seq_len) full sequences (prompt + generation).
-            log_probs: (G, gen_len) per-token log probs under current policy.
-            gen_mask:  (G, gen_len) mask indicating real generated tokens (not pad).
-        """
-        cfg = self.config
-        G = cfg.group_size
-
-        # Expand prompt for the whole group.
-        expanded_ids = prompt_ids.expand(G, -1)        # (G, prompt_len)
-        expanded_mask = attention_mask.expand(G, -1)    # (G, prompt_len)
-
-        # Generate.
-        outputs = self.model.generate(
-            input_ids=expanded_ids,
-            attention_mask=expanded_mask,
-            max_new_tokens=cfg.max_gen_length,
-            do_sample=True,
-            temperature=cfg.temperature,
-            top_p=cfg.top_p,
-            pad_token_id=self.tokenizer.pad_token_id,
-            return_dict_in_generate=True,
-            output_scores=True,
-        )
-
-        sequences = outputs.sequences  # (G, seq_len)
-        prompt_len = prompt_ids.shape[1]
-        gen_ids = sequences[:, prompt_len:]   # (G, gen_len)
-        gen_len = gen_ids.shape[1]
-
-        # Build generation mask (1 for real tokens, 0 for padding).
-        gen_mask = (gen_ids != self.tokenizer.pad_token_id).float()
-
-        # Compute per-token log probs by re-running the model on the full
-        # sequences (more numerically stable than using output_scores from
-        # generate which may go through different code paths).
-        log_probs = self._compute_log_probs(
-            self.model, sequences,
+        # ------------------------------------------------------------------ #
+        # 5. Single batched forward passes for new-policy and ref log-probs.  #
+        # ------------------------------------------------------------------ #
+        # New policy (adapter enabled, gradients on).
+        new_lps = self._compute_log_probs(
+            self.model,
+            sequences,
             torch.ones_like(sequences, dtype=torch.long),
-            gen_ids,
-            prompt_len,
-        )  # (G, gen_len)
+            gen_ids, P,
+        )  # (B*G, gen_len)
 
-        return sequences, log_probs, gen_mask
+        # Reference policy (adapter disabled, no grad).
+        ref_lps = self._compute_ref_log_probs(sequences, gen_ids, P)  # (B*G, gen_len)
+
+        # ------------------------------------------------------------------ #
+        # 6. GRPO loss (clipped surrogate + KL) averaged over real tokens.   #
+        # ------------------------------------------------------------------ #
+        ratio       = torch.exp(new_lps - old_lps.detach())
+        adv_exp     = advantages.unsqueeze(-1).expand_as(ratio)
+        surr1       = ratio * adv_exp
+        surr2       = torch.clamp(ratio, 1 - cfg.clip_epsilon, 1 + cfg.clip_epsilon) * adv_exp
+        policy_loss = -torch.min(surr1, surr2)
+
+        kl_per_tok  = new_lps - ref_lps.detach()
+        kl_penalty  = cfg.kl_coeff * kl_per_tok
+
+        per_tok_loss = (policy_loss + kl_penalty) * gen_mask
+        n_toks       = gen_mask.sum().clamp(min=1)
+        loss         = per_tok_loss.sum() / n_toks
+        kl_mean      = (kl_per_tok * gen_mask).sum() / n_toks
+
+        # ------------------------------------------------------------------ #
+        # 7. Backward + gradient accumulation.                                #
+        # ------------------------------------------------------------------ #
+        (loss / cfg.gradient_accumulation_steps).backward()
+        if (self.global_step + 1) % cfg.gradient_accumulation_steps == 0:
+            torch.nn.utils.clip_grad_norm_(
+                [p for p in self.model.parameters() if p.requires_grad],
+                cfg.max_grad_norm,
+            )
+            self.optimizer.step()
+            self.scheduler.step()
+            self.optimizer.zero_grad()
+
+        return {
+            "loss":           loss.item(),
+            "kl":             kl_mean.item(),
+            "reward":         all_rewards.mean().item(),
+            "adv":            advantages.std().item(),
+            "batch_rewards":  all_rewards.tolist(),
+            "process_reward": process_rewards.mean().item(),
+            "outcome_reward": outcome_rewards.mean().item(),
+        }
 
     def _compute_log_probs(
         self,
@@ -629,150 +713,6 @@ class GRPOTrainer:
         self.model.train()
         return ref_lps
 
-    def _grpo_step(
-        self,
-        all_sequences: List[torch.Tensor],
-        all_old_log_probs: List[torch.Tensor],
-        all_gen_masks: List[torch.Tensor],
-        prompt_lengths: List[int],
-        advantages: torch.Tensor,
-    ) -> Dict[str, float]:
-        """Compute and apply one GRPO optimisation step.
-
-        Args:
-            all_sequences: Per-prompt list of (G, seq_len) tensors.
-            all_old_log_probs: Per-prompt list of (G, gen_len) tensors.
-            all_gen_masks: Per-prompt list of (G, gen_len) tensors.
-            prompt_lengths: Prompt length for each prompt in the batch.
-            advantages: (B * G,) group-relative advantage values.
-
-        Returns:
-            Dictionary with scalar metrics (loss, kl).
-        """
-        cfg = self.config
-        G = cfg.group_size
-        B = len(all_sequences)
-
-        total_loss = torch.tensor(0.0, device=self.device)
-        total_kl = 0.0
-        total_tokens = 0
-
-        for i in range(B):
-            sequences = all_sequences[i]           # (G, seq_len)
-            old_lps = all_old_log_probs[i]         # (G, gen_len)
-            gen_mask = all_gen_masks[i]             # (G, gen_len)
-            # Use the padded prompt length that was actually used during generation
-            # (which may differ from prompt_lengths[i] due to left-padding in batches).
-            padded_prompt_len = sequences.shape[1] - old_lps.shape[1]
-            gen_ids = sequences[:, padded_prompt_len:]  # (G, gen_len)
-            group_adv = advantages[i * G : (i + 1) * G]  # (G,)
-
-            # Current policy log probs.
-            new_lps = self._compute_log_probs(
-                self.model, sequences,
-                torch.ones_like(sequences, dtype=torch.long),
-                gen_ids, padded_prompt_len,
-            )  # (G, gen_len)
-
-            # Reference log probs (adapter-disabled base model).
-            ref_lps = self._compute_ref_log_probs(sequences, gen_ids, padded_prompt_len)
-
-            # Per-token importance sampling ratio.
-            ratio = torch.exp(new_lps - old_lps.detach())  # (G, gen_len)
-
-            # Expand advantages to per-token.
-            adv_expanded = group_adv.unsqueeze(-1).expand_as(ratio)  # (G, gen_len)
-
-            # Clipped surrogate objective (per token).
-            surr1 = ratio * adv_expanded
-            surr2 = torch.clamp(ratio, 1.0 - cfg.clip_epsilon, 1.0 + cfg.clip_epsilon) * adv_expanded
-            # We take the min and negate because we want to *maximise* the objective.
-            policy_loss = -torch.min(surr1, surr2)  # (G, gen_len)
-
-            # KL divergence: KL(pi || pi_ref) = sum( pi * (log_pi - log_pi_ref) )
-            # Approximated per token as: new_lp - ref_lp (since we condition on
-            # the same sequence, this is the per-token KL contribution).
-            kl_per_token = new_lps - ref_lps.detach()  # (G, gen_len)
-            kl_penalty = cfg.kl_coeff * kl_per_token   # (G, gen_len)
-
-            # Combine and mask.
-            per_token_loss = (policy_loss + kl_penalty) * gen_mask  # (G, gen_len)
-            n_tokens = gen_mask.sum()
-            if n_tokens > 0:
-                total_loss = total_loss + per_token_loss.sum() / n_tokens
-            total_kl += (kl_per_token * gen_mask).sum().item() / max(n_tokens.item(), 1)
-            total_tokens += n_tokens.item()
-
-        # Average over the batch.
-        mean_loss = total_loss / max(B, 1)
-
-        # Backward and step (with gradient accumulation).
-        scaled_loss = mean_loss / cfg.gradient_accumulation_steps
-        scaled_loss.backward()
-
-        if (self.global_step + 1) % cfg.gradient_accumulation_steps == 0:
-            torch.nn.utils.clip_grad_norm_(
-                [p for p in self.model.parameters() if p.requires_grad],
-                cfg.max_grad_norm,
-            )
-            self.optimizer.step()
-            self.scheduler.step()
-            self.optimizer.zero_grad()
-
-        return {
-            "loss": mean_loss.item(),
-            "kl": total_kl / max(B, 1),
-        }
-
-    # ------------------------------------------------------------------
-    # Reward scoring
-    # ------------------------------------------------------------------
-
-    def _decode_and_score(
-        self,
-        all_sequences: List[torch.Tensor],
-        prompt_lengths: List[int],
-        targets: List[str],
-    ) -> torch.Tensor:
-        """Decode generated sequences and compute reward scores.
-
-        Args:
-            all_sequences: Per-prompt list of (G, seq_len) tensors.
-            prompt_lengths: Prompt length for each prompt in the batch.
-            targets: Ground-truth target strings (one per prompt).
-
-        Returns:
-            rewards: (B * G,) tensor of reward scores.
-        """
-        cfg = self.config
-        G = cfg.group_size
-        B = len(all_sequences)
-
-        all_outputs: List[str] = []
-        all_targets: List[str] = []
-        all_task_types: List[str] = []
-
-        for i in range(B):
-            sequences = all_sequences[i]  # (G, seq_len)
-            prompt_len = prompt_lengths[i]
-            for g in range(G):
-                gen_ids = sequences[g, prompt_len:]
-                text = self.tokenizer.decode(gen_ids, skip_special_tokens=True)
-                all_outputs.append(text)
-                all_targets.append(targets[i])
-                all_task_types.append(cfg.task_type)
-
-        # Score with SoundnessReward if available.
-        if self.reward_fn is not None:
-            results = self.reward_fn.score_batch(all_outputs, all_targets, all_task_types)
-            rewards = torch.tensor(
-                [r.reward for r in results], dtype=torch.float32, device=self.device
-            )
-        else:
-            # Fallback: simple length-normalised overlap heuristic.
-            rewards = self._fallback_reward(all_outputs, all_targets)
-
-        return rewards
 
     def _fallback_reward(
         self, outputs: List[str], targets: List[str]

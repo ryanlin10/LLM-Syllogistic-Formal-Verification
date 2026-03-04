@@ -1,0 +1,7 @@
+=== Experiment 3: Monotonicity Test ===
+
+n_examples: 10
+original_accuracy: 0.9
+augmented_accuracy: 0.8
+monotonicity_rate: 0.9
+both_correct: 0.8

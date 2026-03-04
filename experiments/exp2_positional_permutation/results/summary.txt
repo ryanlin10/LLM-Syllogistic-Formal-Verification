@@ -1,0 +1,81 @@
+=== Experiment 2: Positional Permutation ===
+
+N examples: 100
+Original accuracy (original premise order): 0.910 (91/100)
+Permuted accuracy (shuffled premise order):  0.610 (61/100)
+Accuracy delta (orig - perm):                +0.300
+Stability (same conclusion output):           0.630 (63/100)
+Consistency (same correctness pre/post):      0.660
+
+Outcome breakdown:
+  both_correct                  : 0.590
+  neither_correct               : 0.070
+  only_original_correct         : 0.320
+  only_permuted_correct         : 0.020
+
+Interpretation:
+  High stability (~1.0): model output is order-invariant (robust)
+  Low stability: model is sensitive to premise order (positional bias)
+
+=== Sample Cases ===
+
+ID: 5bfc036f-2038-41e3-9806-4e18baaed57b | #premises=3
+  Ground truth:         neighbors hear it
+  Original conclusion:  neighbors hear it (correct=True)
+  Permuted conclusion:  neighbors hear it (correct=True)
+  Stable: True
+
+ID: c6bf09b1-fb5d-4f5d-9084-1634bbc8e51b | #premises=5
+  Ground truth:         skin burns quickly
+  Original conclusion:  skin burns quickly (correct=True)
+  Permuted conclusion:  the grass is green (correct=False)
+  Stable: False
+
+ID: c2c705f3-8b39-4979-9da6-8d9e49bb3316 | #premises=4
+  Ground truth:         germs decrease
+  Original conclusion:  germs decrease (correct=True)
+  Permuted conclusion:  germs decrease (correct=True)
+  Stable: True
+
+ID: 9b440d58-1c8e-4d21-9451-9104b48f09e5 | #premises=5
+  Ground truth:         the rain intensifies
+  Original conclusion:  the rain intensifies (correct=True)
+  Permuted conclusion:  the rain intensifies (correct=True)
+  Stable: True
+
+ID: d8b8d1c7-6473-49bd-965b-d19b4eb3714d | #premises=4
+  Ground truth:         motivation increases
+  Original conclusion:  motivation increases (correct=True)
+  Permuted conclusion:  the fish smells ammonia (correct=False)
+  Stable: False
+
+ID: 608fae0c-11c3-4896-b3b5-14677e8090ea | #premises=7
+  Ground truth:         the phone on the charger is well-equipped
+  Original conclusion:  the phone on the charger is well-equipped (correct=True)
+  Permuted conclusion:  the phone on the charger is well-equipped (correct=True)
+  Stable: True
+
+ID: 9f1f115a-d25d-4073-87f4-627b040c7a8e | #premises=3
+  Ground truth:         {for all z, z is endless}
+  Original conclusion:  {for all z, z is endless} (correct=True)
+  Permuted conclusion:  {for all z, z is endless} (correct=True)
+  Stable: True
+
+ID: f58b2198-208b-49af-9d46-d71ed9a3e160 | #premises=5
+  Ground truth:         the plant grows toward light
+  Original conclusion:  the plant grows toward light (correct=True)
+  Permuted conclusion:  the plant grows toward light (correct=True)
+  Stable: True
+
+ID: ee656fc7-2246-4473-9ae0-b45b6f8f5041 | #premises=3
+  Ground truth:         {for all w, w is secondary-source-based}
+  Original conclusion:  {for all w, w is secondary-source-based} (correct=True)
+  Permuted conclusion:  {for all x, x is widely used} (correct=False)
+  Stable: False
+
+ID: 232bf335-84a5-42ec-bc5a-79e816992d37 | #premises=5
+  Ground truth:         the answer sheet is all-season
+  Original conclusion:  {for all y, y is a streaming series} (correct=False)
+  Permuted conclusion:  the Lake Baikal is all-season (correct=False)
+  Stable: False
+

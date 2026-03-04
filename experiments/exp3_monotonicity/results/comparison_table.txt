@@ -1,0 +1,212 @@
+================================================================================
+EXPERIMENT 3: MONOTONICITY TEST (ADD REDUNDANT PREMISE)
+================================================================================
+
+Summary: 10 examples, Stage-0 model
+  Original accuracy:            0.90 (9/10)
+  Augmented accuracy:           0.80 (8/10)
+  Monotonicity preserved (A≈B): 0.90 (9/10)
+
+Interpretation:
+  High monotonicity: adding irrelevant premises preserves conclusions (robust)
+  Low monotonicity:  model is distracted by irrelevant content
+
+================================================================================
+
+EXAMPLE 1/10  (id=4883f5c1-98a7-42e3-9d4b-97b55f27620d)
+------------------------------------------------------------
+Original premises (5):
+  [1] {the scoop of ice cream is kept or the brown package is kept}
+  [2] {if {the blue pen is well-used or {{the scoop of ice cream is kept and the stalled bus is kept} or the brown package is able to be folded}}, then {{for all w, w is rule-bound} and the stalled bus is kept}}
+  [3] {if {the scoop of ice cream is upgradeable or {the blue pen is able to be folded and {the blue pen is well-used or the brown package is kept}}}, then {{for all w, w is rule-bound} and the stalled bus is kept}}
+  [4] the stalled bus is kept
+  [5] the blue pen is able to be folded
+
+Redundant premise (position 4):
+  >>> trees grow upward
+
+Ground truth: {for all w, w is rule-bound}
+
+Model — ORIGINAL: {for all w, w is rule-bound} (correct=True)
+Model — WITH REDUNDANT: {for all w, w is rule-bound} (correct=True)
+Monotonicity preserved: True
+
+================================================================================
+
+EXAMPLE 2/10  (id=8dacc4ba-6532-4764-a4b7-1b8b2d0a8fbc)
+------------------------------------------------------------
+Original premises (6):
+  [1] {if {{a violin is on the table if and only if a violin is on the table} if and only if {a violin is on the table if and only if {the salt truck spreads salt and the room is bright}}}, then {it is not the case that {it is not the case that the bike chain snaps}}}
+  [2] {{the penguin dives and {the penguin dives and {a violin is on the table if and only if a violin is on the table}}} if and only if {a violin is on the table if and only if {the salt truck spreads salt and the room is bright}}}
+  [3] the penguin dives
+  [4] {the rock sinks or the bike chain snaps}
+  [5] {if the rock sinks, then {{if {a violin is on the table if and only if {the salt truck spreads salt and the room is bright}}, then {a violin is on the table if and only if a violin is on the table}} and the penguin dives}}
+  [6] {if the bike chain snaps, then {{if {a violin is on the table if and only if {the salt truck spreads salt and the room is bright}}, then {a violin is on the table if and only if a violin is on the table}} and the penguin dives}}
+
+Redundant premise (position 5):
+  >>> the moon orbits the earth
+
+Ground truth: the bike chain snaps
+
+Model — ORIGINAL: the bike chain snaps (correct=True)
+Model — WITH REDUNDANT: the bike chain snaps (correct=True)
+Monotonicity preserved: True
+
+================================================================================
+
+EXAMPLE 3/10  (id=265c4672-1bab-4801-8799-f94cd69cc251)
+------------------------------------------------------------
+Original premises (2):
+  [1] the pickup order is wide
+  [2] {for all w, w is melancholic}
+
+Redundant premise (position 0):
+  >>> autumn follows summer
+
+Ground truth: {for all w, w is melancholic}
+
+Model — ORIGINAL: {for all w, w is melancholic} (correct=True)
+Model — WITH REDUNDANT: the pickup order is melancholic (correct=False)
+Monotonicity preserved: False
+
+================================================================================
+
+EXAMPLE 4/10  (id=83690298-b46b-4cd2-9b9a-cc3bc2f31340)
+------------------------------------------------------------
+Original premises (7):
+  [1] {if the water tower is technique-heavy, then {for all y, y is permanent}}
+  [2] {the laptop on the desk is technique-heavy or the water tower is an ethnography}
+  [3] {{{the laptop on the desk is technique-heavy and the water tower is permanent} or the video recorder is permanent} if and only if {it is not the case that {it is not the case that {for all w, w is technique-heavy}}}}
+  [4] {{{{the water tower is an ethnography and the water tower is an ethnography} and the laptop on the desk is a graphic novel} or the water tower is technique-heavy} if and only if {it is not the case that {it is not the case that {for all w, w is technique-heavy}}}}
+  [5] the water tower is permanent
+  [6] the water tower is an ethnography
+  [7] the laptop on the desk is a graphic novel
+
+Redundant premise (position 6):
+  >>> the sun rises in the east
+
+Ground truth: {for all y, y is permanent}
+
+Model — ORIGINAL: {for all y, y is permanent} (correct=True)
+Model — WITH REDUNDANT: {for all y, y is permanent} (correct=True)
+Monotonicity preserved: True
+
+================================================================================
+
+EXAMPLE 5/10  (id=d6631e32-5a99-48e8-83cd-5e0efdd6c711)
+------------------------------------------------------------
+Original premises (2):
+  [1] {food spoils at room temperature if and only if the aquarium tank is cloudy}
+  [2] {it is not the case that {it is not the case that the aquarium tank is cloudy}}
+
+Redundant premise (position 1):
+  >>> two plus two equals four
+
+Ground truth: food spoils at room temperature
+
+Model — ORIGINAL: food spoils at room temperature (correct=True)
+Model — WITH REDUNDANT: food spoils at room temperature (correct=True)
+Monotonicity preserved: True
+
+================================================================================
+
+EXAMPLE 6/10  (id=d5999d06-1ec1-45c1-8b67-9fd6c80bd6a5)
+------------------------------------------------------------
+Original premises (3):
+  [1] {there exist z such that z is a memoir}
+  [2] {if {there exist x such that {the studio monitor is a squirrel and x is a memoir}}, then the studio monitor is piloted}
+  [3] the studio monitor is a squirrel
+
+Redundant premise (position 1):
+  >>> the sky is blue
+
+Ground truth: the studio monitor is piloted
+
+Model — ORIGINAL: the studio monitor is piloted (correct=True)
+Model — WITH REDUNDANT: the studio monitor is piloted (correct=True)
+Monotonicity preserved: True
+
+================================================================================
+
+EXAMPLE 7/10  (id=205bf6fc-6034-45eb-9604-e7a6b60a029c)
+------------------------------------------------------------
+Original premises (4):
+  [1] {it is not the case that the scattered papers is a stem}
+  [2] {if {{{{it is not the case that {the mug of coffee is plot-driven and {the scattered papers is plot-driven and the traffic update is bipedal}}} and the scattered papers is bipedal} or the ear protection is bipedal} and the ear protection is a monotreme}, then the scattered papers is a stem}
+  [3] the scattered papers is bipedal
+  [4] the ear protection is a monotreme
+
+Redundant premise (position 4):
+  >>> water is wet
+
+Ground truth: the scattered papers is plot-driven
+
+Model — ORIGINAL: the scattered papers is plot-driven (correct=True)
+Model — WITH REDUNDANT: the scattered papers is plot-driven (correct=True)
+Monotonicity preserved: True
+
+================================================================================
+
+EXAMPLE 8/10  (id=1a75fdc2-ee40-4478-be49-e80a08c020ec)
+------------------------------------------------------------
+Original premises (8):
+  [1] {if {{if the cliff is able to survive heat, then the stage curtain is long-distance} if and only if {if the stage curtain is a causation-claim, then {the cliff is long-distance if and only if the stage curtain is resealable}}}, then {for all y, y is able to survive heat}}
+  [2] {if {Lagos is resealable and the cliff is resealable}, then {if {if the cliff is able to survive heat, then the stage curtain is long-distance}, then {if the stage curtain is a causation-claim, then {the cliff is long-distance if and only if the stage curtain is resealable}}}}
+  [3] {if {Lagos is pastoral or the stage curtain is able to survive heat}, then {it is not the case that {it is not the case that {it is not the case that {it is not the case that {Lagos is resealable and the cliff is resealable}}}}}}
+  [4] {Lagos is pastoral if and only if the cliff is pastoral}
+  [5] {it is not the case that the cliff is resealable}
+  [6] {{it is not the case that {it is not the case that {it is not the case that the cliff is pastoral}}} if and only if the cliff is resealable}
+  [7] {if {the welding mask is pastoral and {if the stage curtain is a causation-claim, then {the cliff is long-distance if and only if the stage curtain is resealable}}}, then {if the cliff is able to survive heat, then the stage curtain is long-distance}}
+  [8] the welding mask is pastoral
+
+Redundant premise (position 1):
+  >>> the sky is blue
+
+Ground truth: {for all y, y is able to survive heat}
+
+Model — ORIGINAL: {for all y, y is able to survive heat} (correct=True)
+Model — WITH REDUNDANT: {for all y, y is able to survive heat} (correct=True)
+Monotonicity preserved: True
+
+================================================================================
+
+EXAMPLE 9/10  (id=3c636bfa-f1d4-4e9a-9f19-f1a4fa2206a2)
+------------------------------------------------------------
+Original premises (6):
+  [1] {there exist z such that z is a mask}
+  [2] {if {there exist x such that {the frying oil is a chronicle and x is a mask}}, then {for all z, z is a tutor}}
+  [3] the frying oil is a chronicle
+  [4] {if {the cricket bat is a mask and {Valeria Rojas is a chronicle and the frying oil is a mask}}, then {for all y, y is a mask}}
+  [5] {there exist z such that z is out of alignment}
+  [6] {{there exist w such that w is out of alignment} if and only if {the cricket bat is a mask and {Valeria Rojas is a chronicle and the frying oil is a mask}}}
+
+Redundant premise (position 6):
+  >>> the sun rises in the east
+
+Ground truth: {for all z, z is a tutor}
+
+Model — ORIGINAL: {for all z, z is a tutor} (correct=True)
+Model — WITH REDUNDANT: {for all z, z is a tutor} (correct=True)
+Monotonicity preserved: True
+
+================================================================================
+
+EXAMPLE 10/10  (id=8b0223f9-8d3b-4cf2-88e1-208a39026e29)
+------------------------------------------------------------
+Original premises (4):
+  [1] {the golf course is nonconforming if and only if the golf course is required}
+  [2] the golf course is nonconforming
+  [3] {{for all x, x is nonconforming} if and only if the fish tank filter is attendance-optional}
+  [4] the fish tank filter is attendance-optional
+
+Redundant premise (position 2):
+  >>> the moon orbits the earth
+
+Ground truth: {for all x, x is nonconforming}
+
+Model — ORIGINAL: the golf course is required (correct=False)
+Model — WITH REDUNDANT: the golf course is required (correct=False)
+Monotonicity preserved: True
+
+================================================================================
+
